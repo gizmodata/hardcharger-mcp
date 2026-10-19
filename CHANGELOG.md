@@ -8,8 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- Built on hardcharger-js `eb17542` and warp-sql-js `0a91935`, the clients for Warp SQL protocol
-  1.0.0 (were `a4ac97c` and `6dea14c`).
+- Built on hardcharger-js `8b6a764` and warp-sql-js `4a27d4d`, the clients for Warp SQL protocol
+  1.0.0 with browser sign-in (were `a4ac97c` and `6dea14c`).
+- **Breaking:** `login_sso` runs Warp SQL browser sign-in (§4.3) on the connection's own URI and
+  port, through `@gizmodata/hardcharger`, as Hardcharger now offers it (its separate OAuth port and
+  `/oauth/initiate` routes are gone). It signs in with the access token the server hands out, used
+  as is (call `login_sso` again when it expires), instead of exchanging an ID token. A failed
+  sign-in reports the flow's code (`access_denied`, `identity_provider_error`,
+  `invalid_credentials`); an expired or collected flow (`flow_not_found`) starts over on the next
+  call; a server without browser sign-in (`not_implemented`) is reported as unavailable.
+  `HARDCHARGER_OAUTH_PORT`, `HARDCHARGER_OAUTH_BASE_URL` and the extension's "SSO port" setting
+  are removed.
 - The client's own error codes begin with `client_`: a lost connection is reopened on
   `client_transport_error` and `client_connection_closed` (was `transport_error`,
   `connection_closed`), the plain-HTTP hint keys on `client_transport_error`, and error messages
@@ -23,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Tests: reopening after `client_transport_error`; no reopen after a session ended for a revoked
   token; `isConnectionLost` for every `session_ended` reason and for the old unprefixed codes.
+- Tests for `login_sso` on browser sign-in: unit tests for each poll answer (pending at the
+  server's interval, complete, a failed flow's code, `flow_not_found`, an expired flow, a server
+  without browser sign-in, an unreachable one); the live tests run it against
+  `hardcharger-server --oauth-client-id` on its main port.
 
 ## [0.1.0] - 2026-10-19
 

@@ -48,11 +48,14 @@ What differs from gizmosql-mcp under the hood, and known limitations. Verified a
 
 ## Browser sign-in
 
-`login_sso` runs the flow of `hardcharger --auth-type external`: `GET /oauth/initiate`, open
-`auth_url`, poll `/oauth/token/<uuid>` (a 404 means expired or already used), then sign in with
-the ID token as the `token_exchange` grant. The base URL is the CLI's: `http(s)://<host>:<oauth
-port>` (https when the URI uses TLS), or `HARDCHARGER_OAUTH_BASE_URL`. The live test drives it with
-a throwaway OIDC provider and a `HARDCHARGER_BROWSER` script that follows the redirects.
+`login_sso` runs Warp SQL browser sign-in (§4.3) through `@gizmodata/hardcharger`'s
+`startBrowserSignIn` and `pollBrowserSignIn`, on the connection's own URI (the server has no
+separate sign-in port): create a flow, open its `authorize_url`, poll at the server's interval. A
+completed flow hands out the server's own access token, used as is (`token`, never renewed); a
+failed flow throws its code with no HTTP status, and `flow_not_found` means expired or already
+collected. A server without `--oauth-client-id` answers `not_implemented` (reported as
+`unavailable`). The live test drives it with a throwaway OIDC provider and a `HARDCHARGER_BROWSER`
+script that follows the redirects.
 
 ## MCP SDK / MCPB details (unchanged from gizmosql-mcp)
 

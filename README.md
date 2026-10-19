@@ -173,9 +173,11 @@ the server's codes: `unknown_certificate_identity` (401) for a certificate that 
 `HARDCHARGER_TLS_ROOTS` or `HARDCHARGER_TLS_SKIP_VERIFY`).
 
 **Browser sign-in (`login_sso`).** On a server started with `--oauth-client-id` (and its identity
-provider settings), `login_sso` opens the provider's login page through the server's sign-in routes
-on its OAuth port (`HARDCHARGER_OAUTH_PORT`, default 31339; `HARDCHARGER_OAUTH_BASE_URL` for
-another URL), waits for you to finish, and connects with the identity token, kept in memory only.
+provider settings), `login_sso` opens the provider's login page through the server's Warp SQL
+browser sign-in (on the connection's own URI and port), waits for you to finish, and connects with
+the Hardcharger access token the server hands out, kept in memory only; when it expires, call
+`login_sso` again. A refusal names its code (`access_denied`, `identity_provider_error`,
+`invalid_credentials` for a user the server doesn't allow).
 `HARDCHARGER_BROWSER` names the program that opens the page (default: `open`, `xdg-open`, or the
 Windows URL handler), as in the Hardcharger CLI. It runs on the stdio transport only (over HTTP it
 would open a browser on the server).
@@ -282,8 +284,6 @@ Only `HARDCHARGER_*` names are read.
 | `HARDCHARGER_MAX_CELL_CHARS` | `200` | Cells longer than this are truncated with `…` |
 | `HARDCHARGER_QUERY_TIMEOUT_SECONDS` | `60` | Per-statement timeout, enforced by the server; `0` disables it |
 | `HARDCHARGER_ENABLE_SSO` | `false` | Register the `login_sso` tool (credentials may then be left empty) |
-| `HARDCHARGER_OAUTH_PORT` | `31339` | The server's browser sign-in port (`login_sso`) |
-| `HARDCHARGER_OAUTH_BASE_URL` | `http(s)://<host>:<port>` | The browser sign-in's URL, when it is elsewhere (a proxy) |
 | `HARDCHARGER_BROWSER` | platform's | Program that opens the sign-in page for `login_sso` |
 | `HARDCHARGER_MCP_BEARER_TOKEN` | | HTTP transport: static bearer token (mutually exclusive with OAuth) |
 | `HARDCHARGER_MCP_PUBLIC_URL` | | HTTP transport with OAuth: public URL of the `/mcp` endpoint, the OAuth resource identifier |
@@ -463,7 +463,7 @@ your browser).
 - **Usage and storage.** The SQL your MCP client sends and the rows the server returns pass through
   the extension in memory and are handed back to the client; nothing is written to disk. Connection
   settings are stored by Claude Desktop; credentials marked sensitive are kept in your operating
-  system's keychain. An SSO identity token is held in process memory only.
+  system's keychain. An SSO access token is held in process memory only.
 - **Third-party sharing.** Data is shared only with the Hardcharger server you configured. What your
   MCP client (for example Claude) does with tool results is governed by that client's own privacy
   policy.

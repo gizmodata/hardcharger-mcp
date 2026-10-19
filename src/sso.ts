@@ -1,33 +1,43 @@
 // Optional browser sign-in through the server's identity provider (enabled with
-// HARDCHARGER_ENABLE_SSO=true), on Hardcharger's browser sign-in server (its OAuth port,
-// default 31339), the flow the Hardcharger CLI's --auth-type external runs:
+// HARDCHARGER_ENABLE_SSO=true): Warp SQL browser sign-in (§4.3, capability oauth_browser), on
+// the server's own Warp SQL port, through @gizmodata/hardcharger:
 //
-//   GET {base}/oauth/initiate            -> { session_uuid, auth_url }
-//   open auth_url in the user's browser
-//   poll GET {base}/oauth/token/{uuid}   -> { status: pending|complete|error }, 404 not_found
-//   sign in with the ID token (the token_exchange grant)
+//   startBrowserSignIn  POST {uri}/v1/auth/oauth/flows        -> flow id, poll secret, authorize URL
+//   open the authorize URL in the user's browser
+//   pollBrowserSignIn   POST {uri}/v1/auth/oauth/flows/{id}   -> pending | complete (the server's
+//                                                                own access token) | failed (a code)
 //
-// {base} is HARDCHARGER_OAUTH_BASE_URL, or http(s)://<host>:<oauth port> with https when the
-// connection URI uses TLS. The token lives in process memory only.
+// The access token lives in process memory only, and is used as is: when it expires, call
+// login_sso again.
 
 import { spawn } from "node:child_process";
-import * as http from "node:http";
-import * as https from "node:https";
+
+import {
+  type BrowserSignInFlow,
+  type BrowserSignInPoll,
+  type BrowserSignInTarget,
+  HardchargerError,
+  HardchargerErrorCode,
+  pollBrowserSignIn,
+  startBrowserSignIn,
+} from "@gizmodata/hardcharger";
 
 import type { HardchargerConnection } from "./connection.js";
 
+/** The two Warp SQL calls a sign-in makes; replaceable in tests. */
+export interface BrowserSignInCalls {
+  start(target: BrowserSignInTarget): Promise<BrowserSignInFlow>;
+  poll(target: BrowserSignInTarget, flow: BrowserSignInFlow): Promise<BrowserSignInPoll>;
+}
+
 export interface SsoOptions {
   waitSeconds: number;
+  /** Overrides the server's poll interval (tests). */
   pollIntervalMs?: number;
   /** Test hook: replaces the browser opener. */
   openUrl?: (url: string) => Promise<void>;
-  /** Test hook: replaces HTTP GET JSON. */
-  getJson?: (url: string, tlsSkipVerify: boolean) => Promise<JsonResponse>;
-}
-
-export interface JsonResponse {
-  status: number;
-  body: Record<string, unknown>;
+  /** Test hook: replaces the Warp SQL browser sign-in calls. */
+  calls?: BrowserSignInCalls;
 }
 
 export interface SsoOutcome {
@@ -37,45 +47,16 @@ export interface SsoOutcome {
 }
 
 interface PendingSession {
-  baseUrl: string;
-  sessionUuid: string;
-  authUrl: string;
+  flow: BrowserSignInFlow;
   startedAt: number;
 }
 
 const pendingSessions = new WeakMap<HardchargerConnection, PendingSession>();
 
-/** Thrown when the browser sign-in server can't be reached at all. */
-class UnreachableError extends Error {}
-
-/** GET a JSON document (small helper so the flow works without extra dependencies). */
-export function httpGetJson(url: string, tlsSkipVerify: boolean): Promise<JsonResponse> {
-  return new Promise((resolve, reject) => {
-    const lib = url.startsWith("https") ? https : http;
-    const req = lib.get(
-      url,
-      url.startsWith("https") ? { rejectUnauthorized: !tlsSkipVerify, timeout: 10000 } : { timeout: 10000 },
-      (res) => {
-        let body = "";
-        res.setEncoding("utf8");
-        res.on("data", (chunk: string) => (body += chunk));
-        res.on("end", () => {
-          try {
-            resolve({ status: res.statusCode ?? 0, body: JSON.parse(body) as Record<string, unknown> });
-          } catch {
-            reject(new Error(`Unexpected non-JSON response (HTTP ${res.statusCode}) from ${url}`));
-          }
-        });
-      },
-    );
-    req.on("timeout", () => {
-      req.destroy(new UnreachableError(`Timed out contacting ${url}`));
-    });
-    req.on("error", (err) =>
-      reject(err instanceof UnreachableError ? err : new UnreachableError(`${url}: ${err.message}`)),
-    );
-  });
-}
+const warpCalls: BrowserSignInCalls = {
+  start: (target) => startBrowserSignIn(target),
+  poll: (target, flow) => pollBrowserSignIn({ ...target, flow }),
+};
 
 /**
  * Opens a URL in the user's browser without any extra dependency: the command in
@@ -115,92 +96,91 @@ export function openInBrowser(url: string, env: NodeJS.ProcessEnv = process.env)
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function unavailable(base: string, why: string): SsoOutcome {
+function unavailable(uri: string, why: string): SsoOutcome {
   return {
     status: "unavailable",
     message:
-      `The Hardcharger server offers no browser sign-in at ${base} (${why}). It runs only when the server ` +
-      "is started with --oauth-client-id (and its identity provider settings); set HARDCHARGER_OAUTH_PORT or " +
-      "HARDCHARGER_OAUTH_BASE_URL if it listens elsewhere, or configure a password, token or client certificate.",
+      `The Hardcharger server at ${uri} offers no browser sign-in (${why}). It is offered only when the ` +
+      "server is started with --oauth-client-id (and its identity provider settings); otherwise configure " +
+      "a password, token or client certificate.",
   };
+}
+
+const code = (err: unknown): string | undefined => (err instanceof HardchargerError ? err.code : undefined);
+
+/** A flow the server no longer knows, or one past its expiry: start a new one. */
+function stale(session: PendingSession): boolean {
+  const expires = Date.parse(session.flow.expiresAt);
+  const now = Date.now();
+  return now - session.startedAt > 10 * 60 * 1000 || (!Number.isNaN(expires) && now >= expires);
 }
 
 /** Runs (or resumes) the browser sign-in flow for a connection. */
 export async function runSsoLogin(connection: HardchargerConnection, options: SsoOptions): Promise<SsoOutcome> {
-  const tlsSkipVerify = connection.config.tlsSkipVerify;
-  const getJson = options.getJson ?? httpGetJson;
+  const calls = options.calls ?? warpCalls;
   const openUrl = options.openUrl ?? openInBrowser;
-  const pollIntervalMs = options.pollIntervalMs ?? 1000;
+  const target = connection.signInTarget();
+  const redact = (err: unknown) => connection.redact(err instanceof Error ? err.message : String(err));
 
   let session = pendingSessions.get(connection);
-  if (!session || Date.now() - session.startedAt > 10 * 60 * 1000) {
-    const baseUrl = connection.oauthBaseUrl();
-    let init: JsonResponse;
+  if (!session || stale(session)) {
+    let flow: BrowserSignInFlow;
     try {
-      init = await getJson(`${baseUrl}/oauth/initiate`, tlsSkipVerify);
+      flow = await calls.start(target);
     } catch (err) {
-      if (err instanceof UnreachableError) return unavailable(baseUrl, err.message);
+      const c = code(err);
+      if (c === HardchargerErrorCode.notImplemented || c === HardchargerErrorCode.notFound) {
+        return unavailable(connection.config.uri, `${c}: ${redact(err)}`);
+      }
+      if (c === HardchargerErrorCode.clientTransportError) return unavailable(connection.config.uri, redact(err));
       throw err;
     }
-    if (init.status === 404) return unavailable(baseUrl, "HTTP 404 for /oauth/initiate");
-    const sessionUuid = typeof init.body.session_uuid === "string" ? init.body.session_uuid : "";
-    const authUrl = typeof init.body.auth_url === "string" ? init.body.auth_url : "";
-    if (init.status !== 200 || !sessionUuid || !authUrl) {
-      return {
-        status: "error",
-        message: `Unexpected response from /oauth/initiate (HTTP ${init.status}): ${JSON.stringify(init.body)}`,
-      };
-    }
-    session = { baseUrl, sessionUuid, authUrl, startedAt: Date.now() };
+    session = { flow, startedAt: Date.now() };
     pendingSessions.set(connection, session);
     try {
-      await openUrl(authUrl);
+      await openUrl(flow.authorizeUrl);
     } catch {
       // The URL is returned in the message so the user can open it manually.
     }
   }
 
+  const pollIntervalMs = options.pollIntervalMs ?? session.flow.pollIntervalS * 1000;
   const deadline = Date.now() + options.waitSeconds * 1000;
-  const pollUrl = `${session.baseUrl}/oauth/token/${session.sessionUuid}`;
   while (Date.now() < deadline) {
-    const { status: httpStatus, body } = await getJson(pollUrl, tlsSkipVerify);
-    const status = typeof body.status === "string" ? body.status : "";
-    if (httpStatus === 404 || status === "not_found") {
+    let poll: BrowserSignInPoll;
+    try {
+      poll = await calls.poll(target, session.flow);
+    } catch (err) {
       pendingSessions.delete(connection);
-      return { status: "error", message: "The sign-in expired or was already used. Call login_sso again." };
-    }
-    if (status === "complete") {
-      const token = typeof body.token === "string" ? body.token : "";
-      pendingSessions.delete(connection);
-      if (!token) {
-        return { status: "error", message: "The sign-in server answered 'complete' but sent no token." };
+      const c = code(err);
+      if (c === HardchargerErrorCode.flowNotFound) {
+        return { status: "error", message: "The sign-in expired or was already used. Call login_sso again." };
       }
-      await connection.useCredentials({ token });
+      // A failed flow throws its code (access_denied, identity_provider_error,
+      // invalid_credentials, ...) with no HTTP status: report it with the code.
+      const why = redact(err).replace(/^browser sign-in failed: /iu, "");
+      return { status: "error", message: `Browser sign-in failed: ${c !== undefined && !why.includes(c) ? `${why} (${c})` : why}` };
+    }
+    if (poll.state === "complete") {
+      pendingSessions.delete(connection);
+      await connection.useCredentials({ accessToken: poll.accessToken });
       try {
         await connection.query("SELECT 1");
       } catch (err) {
-        return {
-          status: "error",
-          message: `Signed in, but connecting with the identity token failed: ${connection.redact(err instanceof Error ? err.message : String(err))}`,
-        };
+        return { status: "error", message: `Signed in, but connecting with the access token failed: ${redact(err)}` };
       }
-      return { status: "complete", message: "Signed in with SSO. Subsequent queries use your identity token." };
+      return {
+        status: "complete",
+        message: "Signed in with SSO. Subsequent queries use your Hardcharger access token (call login_sso again when it expires).",
+      };
     }
-    if (status === "error") {
-      pendingSessions.delete(connection);
-      return { status: "error", message: `Browser sign-in failed: ${String(body.error ?? "unknown error")}` };
-    }
-    if (status !== "pending") {
-      pendingSessions.delete(connection);
-      return { status: "error", message: `Unexpected sign-in poll answer (HTTP ${httpStatus}): ${JSON.stringify(body)}` };
-    }
-    await sleep(pollIntervalMs);
+    await sleep(Math.max(0, Math.min(pollIntervalMs, deadline - Date.now())));
   }
   return {
     status: "pending",
-    authUrl: session.authUrl,
+    authUrl: session.flow.authorizeUrl,
     message:
       "Waiting for you to finish signing in. A browser window should have opened; if not, open this URL: " +
-      `${session.authUrl}\nThen call login_sso again to complete the sign-in.`,
+      `${session.flow.authorizeUrl}\nThen call login_sso again to complete the sign-in.`,
   };
 }

@@ -839,7 +839,7 @@ export function createServer(ctx: ServerContext): McpServer {
         title: "Sign in with SSO",
         description:
           "Signs in to Hardcharger with the server's OAuth/SSO identity provider: opens the provider's " +
-          "login page in your browser, waits for you to finish, then reconnects with the identity " +
+          "login page in your browser, waits for you to finish, then reconnects with the server's access " +
           "token (kept in memory only). If the wait times out, call login_sso again to keep waiting.",
         inputSchema: jsonSchema2020({
           wait_seconds: z

@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 
 import {
+  type BrowserSignInTarget,
   type Connection,
   type ConnectOptions,
   HardchargerError,
@@ -40,9 +41,6 @@ export interface ConnectionConfig {
   /** CA bundle (PEM file path) that verifies the server's certificate, for a private CA. */
   tlsRootsFile?: string;
   tlsSkipVerify: boolean;
-  /** Browser sign-in (login_sso): the server's OAuth port, or its full base URL. */
-  oauthPort: number;
-  oauthBaseUrl?: string;
   /** Catalog to use at session start (optional). */
   defaultCatalog?: string;
   /** Schema to use at session start (optional). */
@@ -71,7 +69,6 @@ export interface McpConfig {
 }
 
 export const DEFAULTS = {
-  oauthPort: 31339,
   maxRows: 500,
   maxCellChars: 200,
   queryTimeoutSeconds: 60,
@@ -219,8 +216,6 @@ function parseConnection(
     mtlsKeyFile,
     tlsRootsFile,
     tlsSkipVerify: parseBoolean(`${prefix}TLS_SKIP_VERIFY`, v("TLS_SKIP_VERIFY"), false),
-    oauthPort: parseInteger(`${prefix}OAUTH_PORT`, v("OAUTH_PORT"), DEFAULTS.oauthPort, { min: 1, max: 65535 }),
-    oauthBaseUrl: parseHttpsUrl(`${prefix}OAUTH_BASE_URL`, v("OAUTH_BASE_URL"), { allowHttp: true }),
     defaultCatalog: nonEmpty(v("DEFAULT_CATALOG")),
     defaultSchema: nonEmpty(v("DEFAULT_SCHEMA")),
     queryTimeoutSeconds: globals.queryTimeoutSeconds,
@@ -476,8 +471,11 @@ function isPlainHttpServer(err: unknown): boolean {
 }
 
 export interface SessionOverrides {
-  /** Replaces the configured credentials with an identity token (login_sso; kept in memory only). */
-  token?: string;
+  /**
+   * Replaces the configured credentials with the Hardcharger access token a browser sign-in
+   * (login_sso) handed out; kept in memory only and used as is, never renewed.
+   */
+  accessToken?: string;
 }
 
 /** The session's catalog and schema, kept by the client and replayed on a replacement session. */
@@ -599,7 +597,7 @@ export class HardchargerConnection {
 
   /** Secrets to redact from any message that might reach a client. */
   secrets(): Array<string | undefined> {
-    return [this.config.password, this.config.token, this.overrides.token];
+    return [this.config.password, this.config.token, this.overrides.accessToken];
   }
 
   redact(text: string): string {
@@ -608,7 +606,7 @@ export class HardchargerConnection {
 
   /** Effective auth method, taking login_sso into account. */
   effectiveAuth(): { method: AuthMethod; user?: string } {
-    if (this.overrides.token !== undefined) return { method: "sso" };
+    if (this.overrides.accessToken !== undefined) return { method: "sso" };
     const method = authMethod(this.config);
     return { method, user: method === "password" ? this.config.username : undefined };
   }
@@ -644,11 +642,26 @@ export class HardchargerConnection {
     await this.reset();
   }
 
-  /** The base URL of the server's browser sign-in (login_sso), as the Hardcharger CLI derives it. */
-  oauthBaseUrl(): string {
-    if (this.config.oauthBaseUrl) return this.config.oauthBaseUrl;
-    const host = this.config.host.includes(":") ? `[${this.config.host}]` : this.config.host;
-    return `${this.config.tls ? "https" : "http"}://${host}:${this.config.oauthPort}`;
+  /** Where a browser sign-in (login_sso) runs: the connection's own URI, with its TLS settings. */
+  signInTarget(): BrowserSignInTarget {
+    const target: BrowserSignInTarget = { url: this.config.uri };
+    const tls = this.tlsOptions();
+    if (tls !== undefined) target.tls = tls;
+    return target;
+  }
+
+  /** The TLS settings (roots, client certificate, skip verify) for this connection, if any. */
+  private tlsOptions(): ConnectOptions["tls"] {
+    const cfg = this.config;
+    if (!cfg.tls) return undefined;
+    const tls: NonNullable<ConnectOptions["tls"]> = {};
+    if (cfg.tlsRootsFile) tls.ca = readPem("TLS roots", cfg.tlsRootsFile);
+    if (cfg.mtlsCertFile && cfg.mtlsKeyFile) {
+      tls.cert = readPem("client certificate", cfg.mtlsCertFile);
+      tls.key = readPem("client key", cfg.mtlsKeyFile);
+    }
+    if (cfg.tlsSkipVerify) tls.skipVerify = true;
+    return Object.keys(tls).length > 0 ? tls : undefined;
   }
 
   /** The client's connect options for this connection's settings. */
@@ -661,18 +674,10 @@ export class HardchargerConnection {
           this.log(`[hardcharger-mcp] ${this.redact(message)}${fields ? ` ${this.redact(JSON.stringify(fields))}` : ""}`),
       },
     };
-    if (cfg.tls) {
-      const tls: NonNullable<ConnectOptions["tls"]> = {};
-      if (cfg.tlsRootsFile) tls.ca = readPem("TLS roots", cfg.tlsRootsFile);
-      if (cfg.mtlsCertFile && cfg.mtlsKeyFile) {
-        tls.cert = readPem("client certificate", cfg.mtlsCertFile);
-        tls.key = readPem("client key", cfg.mtlsKeyFile);
-      }
-      if (cfg.tlsSkipVerify) tls.skipVerify = true;
-      if (Object.keys(tls).length > 0) options.tls = tls;
-    }
-    if (this.overrides.token !== undefined) {
-      options.subjectToken = this.overrides.token;
+    const tls = this.tlsOptions();
+    if (tls !== undefined) options.tls = tls;
+    if (this.overrides.accessToken !== undefined) {
+      options.token = this.overrides.accessToken;
     } else if (cfg.username !== undefined) {
       options.username = cfg.username;
       options.password = cfg.password ?? "";
@@ -686,7 +691,7 @@ export class HardchargerConnection {
 
   /** Opens a fresh client and applies the session settings. */
   private async open(): Promise<Connection> {
-    if (this.overrides.token === undefined && authMethod(this.config) === "none") {
+    if (this.overrides.accessToken === undefined && authMethod(this.config) === "none") {
       throw new Error(
         `Connection "${this.config.name}" has no credentials yet: call login_sso to sign in through the ` +
           "server's identity provider in your browser.",

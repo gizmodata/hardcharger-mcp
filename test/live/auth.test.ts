@@ -74,15 +74,16 @@ describe("password sign-in", () => {
 describe("sign-in tokens and browser sign-in (an identity provider)", () => {
   const idp = new FakeIssuer();
   let server: RunningServer;
-  let oauthPort = 0;
+  let port = 0;
   let browserDir = "";
 
   const token = (claims: Record<string, unknown>) => idp.token(claims, { audience: CLIENT_ID, expiresIn: "10m" });
 
   before(async () => {
     await idp.start();
-    oauthPort = await freePort();
+    port = await freePort();
     server = await launchServer({
+      port,
       args: [
         "--token-allowed-issuer",
         idp.issuer,
@@ -94,12 +95,12 @@ describe("sign-in tokens and browser sign-in (an identity provider)", () => {
         CLIENT_ID,
         "--oauth-client-secret",
         "test-client-secret",
-        "--oauth-port",
-        String(oauthPort),
+        "--oauth-base-url",
+        `http://127.0.0.1:${port}`,
       ],
     });
     // A "browser" for login_sso: follows the sign-in redirects as a person's browser would
-    // (provider /authorize, then the server's /oauth/callback), with no login page.
+    // (provider /authorize, then the server's /warp/v1/auth/oauth/callback), with no login page.
     browserDir = mkdtempSync(join(tmpdir(), "hardcharger-mcp-browser-"));
     const browser = join(browserDir, "browser.mjs");
     writeFileSync(
@@ -180,12 +181,11 @@ describe("sign-in tokens and browser sign-in (an identity provider)", () => {
     await failsWith(elsewhere, "run_query", { sql: "SELECT 1" }, "invalid_credentials");
   });
 
-  it("login_sso runs the server's browser sign-in and connects with the identity token", async () => {
+  it("login_sso runs the server's browser sign-in on its Warp SQL port and connects with its access token", async () => {
     idp.nextLogin = { sub: "s", email: "sso-user@example.com", role: "admin" };
     const client = await mcp({
       HARDCHARGER_URI: server.uri,
       HARDCHARGER_ENABLE_SSO: "true",
-      HARDCHARGER_OAUTH_PORT: String(oauthPort),
       HARDCHARGER_BROWSER: join(browserDir, "browser.mjs"),
     });
     assert.ok((await client.listTools()).tools.some((t) => t.name === "login_sso"));
@@ -203,13 +203,12 @@ describe("sign-in tokens and browser sign-in (an identity provider)", () => {
     const client = await mcp({
       HARDCHARGER_URI: server.uri,
       HARDCHARGER_ENABLE_SSO: "true",
-      HARDCHARGER_OAUTH_PORT: String(oauthPort),
       HARDCHARGER_BROWSER: join(browserDir, "browser.mjs"),
     });
     const r = await call(client, "login_sso", { wait_seconds: 30 });
     assert.equal(r.isError, undefined, textOf(r));
     assert.equal((r.structuredContent as { status: string }).status, "error");
-    assert.match(textOf(r), /Browser sign-in failed: User 'intruder@other\.org' is not authorized/);
+    assert.match(textOf(r), /Browser sign-in failed: User 'intruder@other\.org' is not authorized.*\(invalid_credentials\)/);
     // Still no credential: nothing was signed in.
     await failsWith(client, "run_query", { sql: "SELECT 1" }, /has no credentials yet: call login_sso/);
   });
@@ -220,7 +219,6 @@ describe("sign-in tokens and browser sign-in (an identity provider)", () => {
       const client = await mcp({
         HARDCHARGER_URI: plain.uri,
         HARDCHARGER_ENABLE_SSO: "true",
-        HARDCHARGER_OAUTH_PORT: String(await freePort()),
       });
       const r = await call(client, "login_sso", { wait_seconds: 5 });
       assert.equal(r.isError, undefined, textOf(r));

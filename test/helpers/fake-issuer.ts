@@ -45,7 +45,9 @@ export class FakeIssuer {
           return;
         }
         const code = `code-${this.codes.size + 1}`;
-        this.codes.set(code, { clientId, claims: { ...this.nextLogin } });
+        // The ID token carries the request's nonce, as a provider's does (OpenID Connect Core 3.1.2.1).
+        const nonce = url.searchParams.get("nonce");
+        this.codes.set(code, { clientId, claims: { ...this.nextLogin, ...(nonce ? { nonce } : {}) } });
         const back = new URL(redirect);
         back.searchParams.set("code", code);
         back.searchParams.set("state", url.searchParams.get("state") ?? "");

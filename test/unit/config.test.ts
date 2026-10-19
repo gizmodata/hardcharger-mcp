@@ -43,7 +43,6 @@ describe("parseConfig", () => {
     assert.equal(c.username, "alice");
     assert.equal(c.password, "p@ss:word");
     assert.equal(c.tlsSkipVerify, false);
-    assert.equal(c.oauthPort, DEFAULTS.oauthPort);
     assert.equal(c.queryTimeoutSeconds, DEFAULTS.queryTimeoutSeconds);
     assert.equal(authMethod(c), "password");
     assert.equal(cfg.allowWrites, false);
@@ -64,8 +63,6 @@ describe("parseConfig", () => {
       HARDCHARGER_MAX_ROWS: "10",
       HARDCHARGER_MAX_CELL_CHARS: "50",
       HARDCHARGER_QUERY_TIMEOUT_SECONDS: "0",
-      HARDCHARGER_OAUTH_PORT: "1234",
-      HARDCHARGER_OAUTH_BASE_URL: "https://sso.example.com/",
       HARDCHARGER_MCP_BEARER_TOKEN: "bearer",
       HARDCHARGER_CONNECTION_NAME: "prod",
     });
@@ -76,8 +73,6 @@ describe("parseConfig", () => {
     assert.equal(c.username, "token");
     assert.equal(c.password, "jwt");
     assert.equal(c.tlsSkipVerify, true);
-    assert.equal(c.oauthPort, 1234);
-    assert.equal(c.oauthBaseUrl, "https://sso.example.com");
     assert.equal(c.queryTimeoutSeconds, 0);
     assert.equal(cfg.allowWrites, true);
     assert.equal(cfg.maxRows, 10);
@@ -175,7 +170,6 @@ describe("parseConfig", () => {
   });
 
   it("validates numbers and booleans", () => {
-    assert.throws(() => parseConfig({ ...base, HARDCHARGER_OAUTH_PORT: "70000" }), ConfigError);
     assert.throws(() => parseConfig({ ...base, HARDCHARGER_MAX_ROWS: "0" }), ConfigError);
     assert.throws(() => parseConfig({ ...base, HARDCHARGER_MAX_ROWS: "abc" }), ConfigError);
     assert.throws(() => parseConfig({ ...base, HARDCHARGER_ALLOW_WRITES: "maybe" }), ConfigError);
@@ -292,11 +286,16 @@ describe("client options", () => {
     assert.equal(options({ ...base }).tls, undefined);
   });
 
-  it("derives the browser sign-in URL as the Hardcharger CLI does", () => {
+  it("runs browser sign-in on the connection's own URI, with its TLS settings", () => {
     const conn = (env: Record<string, string>) => new HardchargerConnection(parseConfig(env).connections[0], () => undefined);
-    assert.equal(conn({ ...base }).oauthBaseUrl(), "https://db.internal:31339");
-    assert.equal(conn({ ...base, HARDCHARGER_URI: "hardcharger://db?tls=false", HARDCHARGER_OAUTH_PORT: "4000" }).oauthBaseUrl(), "http://db:4000");
-    assert.equal(conn({ ...base, HARDCHARGER_OAUTH_BASE_URL: "https://sso.example.com" }).oauthBaseUrl(), "https://sso.example.com");
+    assert.deepEqual(conn({ ...base }).signInTarget(), { url: base.HARDCHARGER_URI });
+    assert.deepEqual(conn({ ...base, HARDCHARGER_URI: "hardcharger://db?tls=false" }).signInTarget(), {
+      url: "hardcharger://db?tls=false",
+    });
+    assert.deepEqual(conn({ ...base, HARDCHARGER_TLS_SKIP_VERIFY: "true" }).signInTarget(), {
+      url: base.HARDCHARGER_URI,
+      tls: { skipVerify: true },
+    });
   });
 });
 

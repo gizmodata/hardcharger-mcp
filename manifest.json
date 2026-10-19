@@ -43,7 +43,6 @@
         "HARDCHARGER_MAX_CELL_CHARS": "${user_config.max_cell_chars}",
         "HARDCHARGER_QUERY_TIMEOUT_SECONDS": "${user_config.query_timeout_seconds}",
         "HARDCHARGER_ENABLE_SSO": "${user_config.enable_sso}",
-        "HARDCHARGER_OAUTH_PORT": "${user_config.oauth_port}",
         "HARDCHARGER_2_NAME": "${user_config.connection2_name}",
         "HARDCHARGER_2_URI": "${user_config.connection2_uri}",
         "HARDCHARGER_2_USERNAME": "${user_config.connection2_username}",
@@ -250,15 +249,6 @@
       "title": "Enable SSO sign-in tool",
       "description": "Adds a login_sso tool that signs in through the server's identity provider in your browser (leave username, password and token blank).",
       "default": false,
-      "required": false
-    },
-    "oauth_port": {
-      "type": "number",
-      "title": "SSO port",
-      "description": "Port of the server's browser sign-in (only used by login_sso).",
-      "default": 31339,
-      "min": 1,
-      "max": 65535,
       "required": false
     },
     "connection2_name": {
