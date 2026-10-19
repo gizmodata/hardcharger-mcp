@@ -94,8 +94,8 @@ function errorResult(message: string): CallToolResult {
  */
 export function describeError(err: unknown, redact: (text: string) => string): string {
   let text = (err instanceof Error ? err.message : String(err)).replace(/^\[hardcharger\] /u, "").trim();
-  // Every client error has a code; the ones raised before an HTTP answer (transport_error,
-  // invalid_argument, ...) don't say it in their message, so it is added for the caller.
+  // Every client error has a code; the ones raised before an HTTP answer
+  // (client_transport_error, client_invalid_argument, ...) don't say it in their message, so it is added for the caller.
   const code = errorCode(err) ?? errorCode((err as { cause?: unknown })?.cause);
   if (code !== undefined && !text.includes(code)) text += ` (${code})`;
   return redact(text);
@@ -767,7 +767,7 @@ export function createServer(ctx: ServerContext): McpServer {
         try {
           const info = await connection.run((c) => c.metadata.serverInfo());
           hardchargerVersion = `${String(info.server_name ?? "unknown server")} ${String(info.server_version ?? "")}`.trim();
-          duckdbVersion = String(info.engine_version ?? "unknown");
+          duckdbVersion = String(info["duckdb_version"] ?? "unknown");
         } catch {
           // leave unknowns
         }

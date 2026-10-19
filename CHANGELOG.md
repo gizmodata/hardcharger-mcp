@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Built on hardcharger-js `eb17542` and warp-sql-js `0a91935`, the clients for Warp SQL protocol
+  1.0.0 (were `a4ac97c` and `6dea14c`).
+- The client's own error codes begin with `client_`: a lost connection is reopened on
+  `client_transport_error` and `client_connection_closed` (was `transport_error`,
+  `connection_closed`), the plain-HTTP hint keys on `client_transport_error`, and error messages
+  name the new codes (e.g. `(client_transport_error)`, `(client_invalid_argument)`).
+- `server_info` on a Warp SQL server other than Hardcharger reads the DuckDB version from the
+  server-info key `duckdb_version` (was `engine_version`, which protocol 1.0.0 dropped).
+- A session ended with reason `token_revoked`, `credentials_changed` or `principal_dropped` is no
+  longer reopened with the configured credentials (Warp SQL §4.2, §5.6): the error, with its
+  reason, is returned. `killed`, `token_expired`, no reason or an unknown reason still reopen once.
+
+### Added
+- Tests: reopening after `client_transport_error`; no reopen after a session ended for a revoked
+  token; `isConnectionLost` for every `session_ended` reason and for the old unprefixed codes.
+
 ## [0.1.0] - 2026-10-19
 
 The Hardcharger™ port of [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp) 0.4.11: the same

@@ -325,8 +325,8 @@ describe("isConnectionLost", () => {
   it("reopens for a session an administrator ended, a closed connection, and transport failures", () => {
     assert.equal(isConnectionLost(hcError("session_ended", { reason: "killed" })), true);
     assert.equal(isConnectionLost(hcError("session_not_found")), true);
-    assert.equal(isConnectionLost(hcError("connection_closed")), true);
-    assert.equal(isConnectionLost(hcError("transport_error")), true);
+    assert.equal(isConnectionLost(hcError("client_connection_closed")), true);
+    assert.equal(isConnectionLost(hcError("client_transport_error")), true);
   });
 
   it("never retries a refused credential or a SQL error", () => {
@@ -336,5 +336,22 @@ describe("isConnectionLost", () => {
     assert.equal(isConnectionLost(hcError("sql_error")), false);
     assert.equal(isConnectionLost(hcError("statement_timeout")), false);
     assert.equal(isConnectionLost(new Error("session_ended")), false, "only the client's coded errors count");
+  });
+
+  it("reopens a session ended for an expired token, without a reason or for a reason it doesn't know", () => {
+    assert.equal(isConnectionLost(hcError("session_ended", { reason: "token_expired" })), true);
+    assert.equal(isConnectionLost(hcError("session_ended")), true);
+    assert.equal(isConnectionLost(hcError("session_ended", { reason: "some_later_reason" })), true);
+  });
+
+  it("never reopens a session ended because the sign-in was withdrawn (Warp SQL 4.2, 5.6)", () => {
+    for (const reason of ["token_revoked", "credentials_changed", "principal_dropped"]) {
+      assert.equal(isConnectionLost(hcError("session_ended", { reason })), false, reason);
+    }
+  });
+
+  it("knows only the Warp SQL 1.0 client codes, not the old unprefixed ones", () => {
+    assert.equal(isConnectionLost(hcError("transport_error")), false);
+    assert.equal(isConnectionLost(hcError("connection_closed")), false);
   });
 });

@@ -172,9 +172,30 @@ describe("HardchargerConnection", () => {
     assert.ok(logs.some((l) => /connection lost \(session_ended\), reconnecting/u.test(l)), logs.join("\n"));
   });
 
+  it("reopens the connection once after a client_transport_error, and retries", async () => {
+    const server = fakeServer({ failures: { execute: [hcError("client_transport_error")] } });
+    const { conn, logs } = connection({}, server);
+    assert.equal(await conn.update("DELETE FROM t"), -1);
+    assert.equal(server.opened(), 2);
+    assert.equal(conn.reconnects, 1);
+    assert.ok(logs.some((l) => /connection lost \(client_transport_error\), reconnecting/u.test(l)), logs.join("\n"));
+  });
+
+  it("does not reopen a session ended for a revoked token: the error is the answer", async () => {
+    const server = fakeServer({ failures: { execute: [hcError("session_ended", { reason: "token_revoked" })] } });
+    const { conn } = connection({}, server);
+    await assert.rejects(conn.update("DELETE FROM t"), (err: HardchargerError) => {
+      assert.equal(err.code, "session_ended");
+      assert.equal(err.reason, "token_revoked");
+      return true;
+    });
+    assert.equal(server.opened(), 1);
+    assert.equal(conn.reconnects, 0);
+  });
+
   it("gives up after one reconnect, and never retries a refused credential", async () => {
-    const twice = fakeServer({ failures: { execute: [hcError("transport_error"), hcError("transport_error")] } });
-    await assert.rejects(connection({}, twice).conn.update("SELECT 1"), (err: HardchargerError) => err.code === "transport_error");
+    const twice = fakeServer({ failures: { execute: [hcError("client_transport_error"), hcError("client_transport_error")] } });
+    await assert.rejects(connection({}, twice).conn.update("SELECT 1"), (err: HardchargerError) => err.code === "client_transport_error");
     assert.equal(twice.opened(), 2);
 
     const refused = fakeServer({ failures: { execute: [hcError("invalid_credentials")] } });
@@ -226,7 +247,7 @@ describe("HardchargerConnection", () => {
     const server = fakeServer({
       failures: {
         connect: [
-          hcError("transport_error", {
+          hcError("client_transport_error", {
             message: "GET : fetch failed: error:0A00010B:SSL routines::wrong version number (ERR_SSL_WRONG_VERSION_NUMBER)",
           }),
         ],
@@ -237,7 +258,7 @@ describe("HardchargerConnection", () => {
   });
 
   it("counts session replacements across the clients it opened", async () => {
-    const server = fakeServer({ replacements: 2, failures: { execute: [hcError("connection_closed")] } });
+    const server = fakeServer({ replacements: 2, failures: { execute: [hcError("client_connection_closed")] } });
     const { conn } = connection({}, server);
     await conn.update("SELECT 1");
     assert.equal(conn.sessionReplacements(), 4, "two before the reconnect, two on the new client");

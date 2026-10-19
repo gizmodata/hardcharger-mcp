@@ -63,10 +63,10 @@ describe("password sign-in", () => {
     assert.ok(!text.includes(server.password));
   });
 
-  it("a TLS URI against a plain-HTTP server says to add ?tls=false (transport_error)", async () => {
+  it("a TLS URI against a plain-HTTP server says to add ?tls=false (client_transport_error)", async () => {
     const tlsUri = server.uri.replace("?tls=false", "");
     const wrong = await mcp({ ...passwordSettings(server), HARDCHARGER_URI: tlsUri });
-    const text = await failsWith(wrong, "run_query", { sql: "SELECT 1" }, "transport_error");
+    const text = await failsWith(wrong, "run_query", { sql: "SELECT 1" }, "client_transport_error");
     assert.match(text, /speaks plain HTTP, not TLS: add \?tls=false/);
   });
 });
@@ -297,10 +297,10 @@ describe("client certificate sign-in (mutual TLS)", () => {
     assert.match(text, /HTTP 401/);
   });
 
-  it("without the server's CA the handshake fails (transport_error); skipping verification connects", async () => {
+  it("without the server's CA the handshake fails (client_transport_error); skipping verification connects", async () => {
     const { HARDCHARGER_TLS_ROOTS: _roots, ...noRoots } = certSettings();
     const untrusted = await mcp(noRoots);
-    await failsWith(untrusted, "run_query", { sql: "SELECT 1" }, "transport_error");
+    await failsWith(untrusted, "run_query", { sql: "SELECT 1" }, "client_transport_error");
     const skipping = await mcp({ ...noRoots, HARDCHARGER_TLS_SKIP_VERIFY: "true" });
     assert.equal((await ok<{ user: string }>(skipping, "server_info")).user, clientEmail);
   });

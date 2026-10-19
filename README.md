@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/MCP-server%20%2B%20Claude%20Desktop%20extension-d97757.svg" alt="MCP server and Claude Desktop extension">
   <img src="https://img.shields.io/badge/TypeScript-ESM-3178C6.svg?logo=typescript&logoColor=white" alt="TypeScript, ESM">
   <img src="https://img.shields.io/badge/Node-%E2%89%A522.19-339933.svg?logo=node.js&logoColor=white" alt="Node 22.19 or later">
-  <a href="https://github.com/gizmodata/warp-sql"><img src="https://img.shields.io/badge/protocol-Warp%20SQL-31a8db.svg" alt="Warp SQL protocol"></a>
+  <a href="https://github.com/gizmodata/warp-sql"><img src="https://img.shields.io/badge/protocol-Warp%20SQL%201.0.0-31a8db.svg" alt="Warp SQL protocol"></a>
   <a href="https://github.com/gizmodata/hardcharger-js"><img src="https://img.shields.io/badge/built%20on-Hardcharger%20JS-31a8db.svg" alt="Built on the Hardcharger JavaScript client"></a>
   <a href="https://github.com/gizmodata/hardcharger"><img src="https://img.shields.io/badge/server-Hardcharger-f15a24.svg" alt="Hardcharger"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-brightgreen.svg" alt="Apache 2.0 license"></a>
@@ -35,8 +35,9 @@ runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: in development, unreleased (0.1.0).** Built on hardcharger-js `a4ac97c` (warp-sql-js
-> `6dea14c`); tested against `hardcharger-server` 0.3.0 and the image of Hardcharger's main branch.
+> **Status: in development, unreleased (0.1.0).** Built on hardcharger-js `eb17542` (warp-sql-js
+> `0a91935`, Warp SQL protocol 1.0.0); tested against `hardcharger-server` 0.3.0 and the image of
+> Hardcharger's main branch.
 > Not published to npm or the extension directory yet.
 
 ## 🧰 Tools
@@ -168,7 +169,7 @@ npx -y @gizmodata/hardcharger-mcp
 The identity is the certificate's e-mail SAN unless the server says otherwise; it must be one of
 the server's `--mtls-admin-identities` or, under access control, a user of its store. Refusals keep
 the server's codes: `unknown_certificate_identity` (401) for a certificate that names no user, and
-`transport_error` when the handshake fails (an untrusted server certificate without
+`client_transport_error` when the handshake fails (an untrusted server certificate without
 `HARDCHARGER_TLS_ROOTS` or `HARDCHARGER_TLS_SKIP_VERIFY`).
 
 **Browser sign-in (`login_sso`).** On a server started with `--oauth-client-id` (and its identity
@@ -356,7 +357,9 @@ grants decide what each table allows.
   same catalog and schema (also those set by `use_schema` or `USE`), says so in the log, and counts
   it in `server_info` (`session_replacements`); temporary tables and SQL-level settings of the old
   session are gone. A session an administrator killed, a closed connection or a transport failure
-  reopens the connection once and retries (`reconnects`); a refused credential is never retried.
+  reopens the connection once and retries (`reconnects`); a refused credential is never retried,
+  and neither is a session ended because the sign-in was withdrawn (`token_revoked`,
+  `credentials_changed`, `principal_dropped`).
 - The server has no tools that touch the local filesystem or any network endpoint other than the
   configured Hardcharger servers (and, for `login_sso`, the server's sign-in routes and your
   identity provider in your browser).
@@ -366,11 +369,11 @@ grants decide what each table allows.
 **`speaks plain HTTP, not TLS: add ?tls=false`.** A `hardcharger://` URI uses TLS unless it says
 `?tls=false`; a development server started without `--tls-cert` needs it.
 
-**TLS errors (`self-signed certificate`, `unable to verify`, `transport_error`).** Set
+**TLS errors (`self-signed certificate`, `unable to verify`, `client_transport_error`).** Set
 `HARDCHARGER_TLS_ROOTS` to the CA that issued the server's certificate, or (for a throwaway server)
 `HARDCHARGER_TLS_SKIP_VERIFY=true`.
 
-**`transport_error` to a `10.x`, `172.16.x` or `192.168.x` address.** The extension connects
+**`client_transport_error` to a `10.x`, `172.16.x` or `192.168.x` address.** The extension connects
 directly from your machine: connect your VPN first, then start a new chat. For a server reachable
 only through SSH or Kubernetes, forward the port and use `hardcharger://localhost:31337` (with
 `HARDCHARGER_TLS_SKIP_VERIFY=true` if the certificate names the internal host):
@@ -430,7 +433,7 @@ npm run test:examples   # this README's examples, installed from the packed tarb
 ```
 
 Negative tests assert the error code (`invalid_credentials`, `permission_denied`,
-`unknown_certificate_identity`, `statement_timeout`, `sql_error`, `transport_error`,
+`unknown_certificate_identity`, `statement_timeout`, `sql_error`, `client_transport_error`,
 `invalid_option_value`), each beside a positive twin. CI runs everything against the image of
 Hardcharger's main branch (`ghcr.io/gizmodata/hardcharger:main`, private), pulled with the
 workflow's `GITHUB_TOKEN`; the package must grant this repository read access (package settings,

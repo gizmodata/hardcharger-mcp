@@ -21,21 +21,21 @@ describe("describeError", () => {
 
   it("drops the client's [hardcharger] prefix and redacts", () => {
     const err = new HardchargerError({
-      code: "invalid_argument",
+      code: "client_invalid_argument",
       message: "[hardcharger] invalid url hardcharger://h: password is hunter2",
     } as ConstructorParameters<typeof HardchargerError>[0]);
-    assert.equal(describeError(err, (t) => t.replace("hunter2", "***")), "invalid url hardcharger://h: password is *** (invalid_argument)");
+    assert.equal(describeError(err, (t) => t.replace("hunter2", "***")), "invalid url hardcharger://h: password is *** (client_invalid_argument)");
     assert.equal(describeError("plain", (t) => t), "plain");
   });
 
   it("adds the code to a client error whose message lacks it (no HTTP answer)", () => {
     const err = new HardchargerError({
-      code: "transport_error",
+      code: "client_transport_error",
       message: "GET : fetch failed: self-signed certificate in certificate chain (SELF_SIGNED_CERT_IN_CHAIN)",
     } as ConstructorParameters<typeof HardchargerError>[0]);
-    assert.match(describeError(err, (t) => t), /\(SELF_SIGNED_CERT_IN_CHAIN\) \(transport_error\)$/);
+    assert.match(describeError(err, (t) => t), /\(SELF_SIGNED_CERT_IN_CHAIN\) \(client_transport_error\)$/);
     // ... and to the plain-HTTP hint, which wraps it.
     const wrapped = new Error("hint: add ?tls=false", { cause: err });
-    assert.equal(describeError(wrapped, (t) => t), "hint: add ?tls=false (transport_error)");
+    assert.equal(describeError(wrapped, (t) => t), "hint: add ?tls=false (client_transport_error)");
   });
 });

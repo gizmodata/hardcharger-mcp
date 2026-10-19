@@ -7,6 +7,7 @@ import {
   type Connection,
   type ConnectOptions,
   HardchargerError,
+  HardchargerErrorCode,
   connect as hardchargerConnect,
   parseUrl,
 } from "@gizmodata/hardcharger";
@@ -440,23 +441,36 @@ export function errorCode(err: unknown): string | undefined {
 }
 
 /**
+ * `session_ended` reasons after which the user's sign-in itself no longer holds (Warp SQL
+ * §4.2, §5.6): a revoked token, changed credentials, a dropped user. Nothing signs in again
+ * on its own after these; the error is the answer.
+ */
+const SIGN_IN_WITHDRAWN = new Set(["token_revoked", "credentials_changed", "principal_dropped"]);
+
+/**
  * Does this error mean the connection (or the server's session behind it) is gone in a
  * way that a fresh connection with the same credentials cures? The client itself already
  * replaces a session the server lost (`session_not_found`, an expired token) and replays
  * the session's options; this covers what it can't: a session an administrator ended
- * (`session_ended`, e.g. `KILL SESSION`), a closed connection, a transport failure, and a
- * lost session the client could not replace. A refused credential is never retried.
+ * (`session_ended` with reason `killed`, e.g. `KILL SESSION`, an expired token, or a reason
+ * this server doesn't know), a closed connection, a transport failure, and a lost session
+ * the client could not replace. A refused credential is never retried, and neither is a
+ * session ended because the sign-in was withdrawn (`token_revoked`, `credentials_changed`,
+ * `principal_dropped`).
  */
 export function isConnectionLost(err: unknown): boolean {
   const code = errorCode(err);
+  if (code === HardchargerErrorCode.sessionEnded) return !SIGN_IN_WITHDRAWN.has(String((err as HardchargerError).reason ?? ""));
   return (
-    code === "session_ended" || code === "session_not_found" || code === "connection_closed" || code === "transport_error"
+    code === HardchargerErrorCode.sessionNotFound ||
+    code === HardchargerErrorCode.clientConnectionClosed ||
+    code === HardchargerErrorCode.clientTransportError
   );
 }
 
 /** A plain-HTTP server answered a TLS handshake: the URI needs `?tls=false`. */
 function isPlainHttpServer(err: unknown): boolean {
-  if (errorCode(err) !== "transport_error") return false;
+  if (errorCode(err) !== HardchargerErrorCode.clientTransportError) return false;
   const text = `${err instanceof Error ? err.message : ""} ${String((err as { cause?: unknown }).cause ?? "")}`;
   return /wrong version number|ERR_SSL_WRONG_VERSION_NUMBER|packet length too long/iu.test(text);
 }

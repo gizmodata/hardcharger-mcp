@@ -1,7 +1,7 @@
 # Implementation notes
 
 What differs from gizmosql-mcp under the hood, and known limitations. Verified against
-`@gizmodata/hardcharger` 0.1.0 (hardcharger-js `a4ac97c`, warp-sql-js `6dea14c`),
+`@gizmodata/hardcharger` 0.1.0 (hardcharger-js `eb17542`, warp-sql-js `0a91935`),
 `@modelcontextprotocol/sdk` 1.32.1, `@anthropic-ai/mcpb` 2.1.2 and `hardcharger-server` 0.3.0.
 
 ## Client and protocol
@@ -22,7 +22,10 @@ What differs from gizmosql-mcp under the hood, and known limitations. Verified a
   client (it ends the sign-in too), so the MCP layer reopens the connection once and retries, as
   gizmosql-mcp did for "session has been killed". A server restart is handled by the client
   alone: the old access token is refused, it signs in again with the password, then replaces the
-  session.
+  session. A session ended because the sign-in was withdrawn (reason `token_revoked`,
+  `credentials_changed` or `principal_dropped`, Warp SQL §4.2 and §5.6) is never reopened: the
+  error, with its reason, is the answer. An expired token, no reason or a reason this version
+  doesn't know reopens as `killed` does.
 - `hardcharger_sessions()` reports a UUID per session, not the Warp SQL session id the client
   sees; `KILL SESSION` takes the former (`HARDCHARGER_CURRENT_SESSION()`).
 - Timeouts: `statementTimeoutMs` (§6.9) per statement; the server cancels and answers
@@ -36,7 +39,7 @@ What differs from gizmosql-mcp under the hood, and known limitations. Verified a
   parallel streams buys nothing for at most `max_rows + 1` rows, and one stream stops cleanly when
   closed at the cap.
 - Errors answered by the server end with `(code, SQLSTATE, HTTP status, request id)`; errors raised
-  before an answer (`transport_error`, `invalid_argument`) don't name their code, so
+  before an answer (`client_transport_error`, `client_invalid_argument`) don't name their code, so
   `describeError` appends it.
 - Observed with Hardcharger 0.3.0: a password sign-in that presents no client certificate to a
   server started with `--mtls-ca-cert` had its connection closed ("other side closed",
