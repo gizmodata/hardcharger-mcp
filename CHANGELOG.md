@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- The README banner is the new Hardcharger™ logo, the bull mascot lockup in a light and a dark
+  version that follows the reader's color scheme, in place of the GizmoData banner card, and the
+  Claude Desktop extension's icon (`icon.png`, 512 px) is the Hardcharger bull head in place of the
+  GizmoData logo.
+
 ## [0.1.0] - 2026-10-19
 
 The Hardcharger™ port of [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp) 0.4.11: the same
