@@ -1,8 +1,8 @@
 # Implementation notes
 
 What differs from gizmosql-mcp under the hood, and known limitations. Verified against
-`@gizmodata/hardcharger` 0.1.0 (hardcharger-js `eb17542`, warp-sql-js `0a91935`),
-`@modelcontextprotocol/sdk` 1.32.1, `@anthropic-ai/mcpb` 2.1.2 and `hardcharger-server` 0.3.0.
+`@gizmodata/hardcharger` 0.1.0 (hardcharger-js `060226a`, warp-sql-js `07947a2`),
+`@modelcontextprotocol/sdk` 1.32.1, `@anthropic-ai/mcpb` 2.1.2 and `hardcharger-server` 2.0.0-rc.1.
 
 ## Client and protocol
 

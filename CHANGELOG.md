@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- Built on hardcharger-js `8b6a764` and warp-sql-js `4a27d4d`, the clients for Warp SQL protocol
+- Built on hardcharger-js `060226a` and warp-sql-js `07947a2`, the clients for Warp SQL protocol
   1.0.0 with browser sign-in (were `a4ac97c` and `6dea14c`).
 - **Breaking:** `login_sso` runs Warp SQL browser sign-in (§4.3) on the connection's own URI and
   port, through `@gizmodata/hardcharger`, as Hardcharger now offers it (its separate OAuth port and
@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server's interval, complete, a failed flow's code, `flow_not_found`, an expired flow, a server
   without browser sign-in, an unreachable one); the live tests run it against
   `hardcharger-server --oauth-client-id` on its main port.
+
+### Fixed
+- CI's live tests on main failed: the browser sign-in suite started `hardcharger-server` with
+  `--oauth-port`, which Hardcharger 2.0.0-rc.1 removed (browser sign-in runs on the server's own
+  port, Warp SQL §4.3), so the server exited with "unknown option". The suite now passes
+  `--oauth-base-url` with the server's port (from the merged Warp SQL 1.0 work).
 
 ### Documentation
 

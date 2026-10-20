@@ -38,9 +38,9 @@ runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: in development, unreleased (0.1.0).** Built on hardcharger-js `eb17542` (warp-sql-js
-> `0a91935`, Warp SQL protocol 1.0.0); tested against `hardcharger-server` 0.3.0 and the image of
-> Hardcharger's main branch.
+> **Status: in development, unreleased (0.1.0).** Built on hardcharger-js `060226a` (warp-sql-js
+> `07947a2`, Warp SQL protocol 1.0.0); tested against `hardcharger-server` 2.0.0-rc.1 and the image
+> of Hardcharger's main branch.
 > Not published to npm or the extension directory yet.
 
 ## 🧰 Tools
