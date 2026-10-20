@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-20
+
+The first published release, with Hardcharger 2.0.0 (0.1.0 was never published). The Changed and
+Fixed entries describe what moved since 0.1.0, for anyone who installed it from git.
+<!-- Set the date above at tag time. -->
+
 ### Changed
-- Built on hardcharger-js `060226a` and warp-sql-js `07947a2`, the clients for Warp SQL protocol
-  1.0.0 with browser sign-in (were `a4ac97c` and `6dea14c`).
+- Built on `@gizmodata/hardcharger` 2.0.0 (hardcharger-js `a6e93a2`, on `@gizmodata/warp-sql` 1.0.0,
+  warp-sql-js `903feb4`), the clients for Warp SQL protocol 1.0.0 with browser sign-in (were
+  `a4ac97c` and `6dea14c`). The chart, the extension manifest and the npm package are 2.0.0: the
+  Hardcharger clients and integrations launch with the server's version.
 - **Breaking:** `login_sso` runs Warp SQL browser sign-in (§4.3) on the connection's own URI and
   port, through `@gizmodata/hardcharger`, as Hardcharger now offers it (its separate OAuth port and
   `/oauth/initiate` routes are gone). It signs in with the access token the server hands out, used

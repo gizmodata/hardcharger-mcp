@@ -33,7 +33,7 @@ for (const name of ["@gizmodata/hardcharger", "@gizmodata/warp-sql"]) {
   if (name === "@gizmodata/hardcharger") {
     let spec = pkg.dependencies?.[name];
     if (fix && !range.test(spec ?? "")) spec = pkg.dependencies[name] = `^${entry.version}`;
-    if (!range.test(spec ?? "")) problems.push(`package.json: ${name} must be a semver range like ^0.1.0, not ${spec}`);
+    if (!range.test(spec ?? "")) problems.push(`package.json: ${name} must be a semver range like ^2.0.0, not ${spec}`);
     if (fix) root.dependencies[name] = spec;
     if (root?.dependencies?.[name] !== spec) {
       problems.push(`package-lock.json: the root's ${name} must be ${spec}, as in package.json`);

@@ -5,14 +5,13 @@ name: release
 # tagged commit itself, then a GitHub Release with the Claude Desktop extension bundles, their
 # checksums, the packaged Helm chart, the npm tarball and the tag's CHANGELOG section.
 #
-# Publishing beyond the GitHub Release is prepared but off:
-#   - the container image and Helm chart go to GHCR only when the repository variable
-#     IMAGE_PUBLISH_ENABLED is "true";
-#   - npm (trusted publishing: OIDC, no stored token) only when NPM_PUBLISH_ENABLED is "true".
-#     Before turning it on: publish @gizmodata/warp-sql and @gizmodata/hardcharger (this package
-#     depends on them; the job checks), create @gizmodata/hardcharger-mcp on npmjs.com with this
-#     repository's release.yml (environment npm) as its trusted publisher, and create the `npm`
-#     environment here (with required reviewers, if wanted).
+# Publishing beyond the GitHub Release is gated on repository variables:
+#   - the container image and Helm chart go to GHCR when IMAGE_PUBLISH_ENABLED is "true";
+#   - npm (public; trusted publishing: OIDC, no stored token) when NPM_PUBLISH_ENABLED is "true".
+#     It needs @gizmodata/hardcharger on npm in the range package.json names (the job checks;
+#     @gizmodata/warp-sql comes with it), and on npmjs.com @gizmodata/hardcharger-mcp with this
+#     repository's release.yml (environment npm) as its trusted publisher; the `npm` environment
+#     exists here (with required reviewers, if wanted).
 
 on:
   push:
@@ -165,9 +164,8 @@ jobs:
           path: .clients
       - run: npm ci
       - run: npm run build
-      # restricted: the package stays private to the npm organization. Making it public is a
-      # decision for GizmoData, not a default.
+      # public, as package.json's publishConfig says.
       - name: Publish
         env:
           HARDCHARGER_MCP_RELEASE: "1"
-        run: npm publish --access restricted
+        run: npm publish --access public

@@ -9,13 +9,15 @@ name: ci
 #   - the Claude Desktop extension bundle, the container image and the Helm chart.
 #
 # Access, with no personal token:
-#   - gizmodata/warp-sql-js and gizmodata/hardcharger-js (internal; the clients are not on npm
-#     yet) through the DEPLOY_KEY_WARP_SQL_JS and DEPLOY_KEY_HARDCHARGER_JS secrets, read-only
-#     deploy keys of those repositories: the clients job builds the commits pinned in
-#     scripts/*.commit and hands the tarballs to the other jobs;
-#   - hardcharger-server from the private image ghcr.io/gizmodata/hardcharger, pulled with this
-#     workflow's GITHUB_TOKEN: the package must grant this repository read access (package
-#     settings, Manage Actions access).
+#   - gizmodata/warp-sql-js and gizmodata/hardcharger-js through the DEPLOY_KEY_WARP_SQL_JS and
+#     DEPLOY_KEY_HARDCHARGER_JS secrets, read-only deploy keys of those repositories (needed while
+#     they are private; plain clones once they are public): the clients job builds the commits
+#     pinned in scripts/*.commit and hands the tarballs to the other jobs, so a run tests the
+#     pinned clients, never published versions;
+#   - hardcharger-server from the image ghcr.io/gizmodata/hardcharger, pulled with this
+#     workflow's GITHUB_TOKEN. While the image is private the package must grant this
+#     repository read access (package settings, Manage Actions access); once it is public the
+#     login is unnecessary but harmless.
 # Without either, the job that needs it fails, and every job after it: nothing is skipped.
 
 on:

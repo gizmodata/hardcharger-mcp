@@ -38,10 +38,9 @@ runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: in development, unreleased (0.1.0).** Built on hardcharger-js `060226a` (warp-sql-js
-> `07947a2`, Warp SQL protocol 1.0.0); tested against `hardcharger-server` 2.0.0-rc.1 and the image
-> of Hardcharger's main branch.
-> Not published to npm or the extension directory yet.
+> **Status: 2.0.0, with Hardcharger 2.0.0.** Built on `@gizmodata/hardcharger` 2.0.0 (hardcharger-js
+> `a6e93a2`, on `@gizmodata/warp-sql` 1.0.0, Warp SQL protocol 1.0.0); tested against
+> `hardcharger-server` 2.0.0-rc.1 and the image of Hardcharger's main branch.
 
 ## 🧰 Tools
 
@@ -121,8 +120,8 @@ claude mcp add hardcharger \
 ```
 
 Use `-s user` to make it available in every project. Node.js 22.19 or newer is required when
-running through `npx`. Until the package is on npm, install it from a release tarball (or a build,
-`npm pack`) and use `-- hardcharger-mcp` instead of `npx -y @gizmodata/hardcharger-mcp`.
+running through `npx`. Installed globally (`npm install -g @gizmodata/hardcharger-mcp`), the command
+is `hardcharger-mcp`: use `-- hardcharger-mcp` instead of `npx -y @gizmodata/hardcharger-mcp`.
 
 ### `claude_desktop_config.json` (manual JSON)
 
@@ -258,8 +257,8 @@ npx -y @gizmodata/hardcharger-mcp --transport http --port 3000
 [`Dockerfile`](Dockerfile) builds an image whose entrypoint runs the HTTP transport on port 3000, and
 [`charts/hardcharger-mcp`](charts/hardcharger-mcp) deploys it with a ConfigMap for the
 `HARDCHARGER_*` settings, a Secret (or `existingSecret`) for credentials, and an optional Ingress.
-The release workflow builds both and attaches the packaged chart to the GitHub Release; pushing the
-image and chart to GHCR is prepared but off (`IMAGE_PUBLISH_ENABLED`).
+The release workflow builds both and attaches the packaged chart to the GitHub Release, and pushes
+the image and chart to GHCR when the repository variable `IMAGE_PUBLISH_ENABLED` is `true`.
 
 ```bash
 helm upgrade --install hardcharger-mcp charts/hardcharger-mcp \
@@ -398,14 +397,14 @@ After changing settings, start a new chat.
 
 ## 🛠️ Building and testing
 
-Node 22.19 or later. `@gizmodata/hardcharger` and `@gizmodata/warp-sql` aren't on npm yet, so they
-are built from [gizmodata/hardcharger-js](https://github.com/gizmodata/hardcharger-js) and
+Node 22.19 or later. For development and CI, `@gizmodata/hardcharger` and `@gizmodata/warp-sql` are
+built from [gizmodata/hardcharger-js](https://github.com/gizmodata/hardcharger-js) and
 [gizmodata/warp-sql-js](https://github.com/gizmodata/warp-sql-js) at the commits pinned in
 [scripts/hardcharger-js.commit](scripts/hardcharger-js.commit) and
 [scripts/warp-sql-js.commit](scripts/warp-sql-js.commit), and packed to `.clients/`, where
-`package-lock.json` finds them. `package.json`, and so the published package, names the npm package
-and its range (`^0.1.0`); the tarballs are a stand-in for development and CI only
-(`scripts/check-lock.mjs` checks both).
+`package-lock.json` finds them, so the tests run against those exact clients. `package.json`, and
+so the published package, names the npm package and its range (`^2.0.0`); the tarballs are a
+stand-in for development and CI only (`scripts/check-lock.mjs` checks both).
 
 ```bash
 npm run clients        # clone both clients (git access needed), build and pack the pinned commits
@@ -438,11 +437,11 @@ npm run test:examples   # this README's examples, installed from the packed tarb
 Negative tests assert the error code (`invalid_credentials`, `permission_denied`,
 `unknown_certificate_identity`, `statement_timeout`, `sql_error`, `client_transport_error`,
 `invalid_option_value`), each beside a positive twin. CI runs everything against the image of
-Hardcharger's main branch (`ghcr.io/gizmodata/hardcharger:main`, private), pulled with the
-workflow's `GITHUB_TOKEN`; the package must grant this repository read access (package settings,
-"Manage Actions access"), or the live jobs fail. While the clients are internal, CI clones them with
+Hardcharger's main branch (`ghcr.io/gizmodata/hardcharger:main`), pulled with the workflow's
+`GITHUB_TOKEN`; while the image is private the package must grant this repository read access
+(package settings, "Manage Actions access"), or the live jobs fail. CI clones the clients with
 `DEPLOY_KEY_WARP_SQL_JS` and `DEPLOY_KEY_HARDCHARGER_JS`, read-only deploy keys of those
-repositories.
+repositories (needed while they are private).
 
 ## 📦 Releasing
 
@@ -451,9 +450,10 @@ Releases follow [semantic versioning](https://semver.org) and [CHANGELOG.md](CHA
 `package.json`, `manifest.json` and `charts/hardcharger-mcp/Chart.yaml` (`version` and
 `appVersion`), commit, and push `main` and `vX.Y.Z` together. `release.yml` runs the full CI on the
 tagged commit, then makes a GitHub Release with the `.mcpb` bundles, their checksums, the Helm chart
-and the npm tarball, and the CHANGELOG section as notes. Publishing to npm (trusted publishing,
-`NPM_PUBLISH_ENABLED`) and pushing the image and chart to GHCR (`IMAGE_PUBLISH_ENABLED`) are
-prepared but off; `npm publish` from a laptop refuses to run.
+and the npm tarball, and the CHANGELOG section as notes. Publishing to npm (public; trusted
+publishing, OIDC) runs when the repository variable `NPM_PUBLISH_ENABLED` is `true`, after a check
+that `@gizmodata/hardcharger` is on npm in the range `package.json` names; the image and chart go
+to GHCR when `IMAGE_PUBLISH_ENABLED` is `true`. `npm publish` from a laptop refuses to run.
 
 ## 🔒 Privacy Policy
 
