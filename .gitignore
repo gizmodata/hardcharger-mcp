@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# The client tarballs (scripts/install-clients.sh builds them from the pinned commits)
+.clients/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# MCPB bundle build output
+build/
+*.mcpb
+*.mcpb.sha256
+
+# Packaging
+*.tgz
+
+# Environment
+.env
+.env.*
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Logs
+*.log

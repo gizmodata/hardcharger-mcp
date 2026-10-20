@@ -1,0 +1,173 @@
+name: release
+
+# On a vX.Y.Z tag: the full CI (ci.yml: lint, typecheck, unit tests on every Node and the
+# floors, the live suites, the README's examples, the bundle, the image, the chart) on the
+# tagged commit itself, then a GitHub Release with the Claude Desktop extension bundles, their
+# checksums, the packaged Helm chart, the npm tarball and the tag's CHANGELOG section.
+#
+# Publishing beyond the GitHub Release is prepared but off:
+#   - the container image and Helm chart go to GHCR only when the repository variable
+#     IMAGE_PUBLISH_ENABLED is "true";
+#   - npm (trusted publishing: OIDC, no stored token) only when NPM_PUBLISH_ENABLED is "true".
+#     Before turning it on: publish @gizmodata/warp-sql and @gizmodata/hardcharger (this package
+#     depends on them; the job checks), create @gizmodata/hardcharger-mcp on npmjs.com with this
+#     repository's release.yml (environment npm) as its trusted publisher, and create the `npm`
+#     environment here (with required reviewers, if wanted).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# Its own group: ci.yml, called below, takes `${{ github.workflow }}-${{ github.ref }}`, and in a
+# called workflow github.workflow is this workflow's name, so the same group would deadlock.
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/gizmodata/hardcharger-mcp
+  CHART_OCI: oci://ghcr.io/gizmodata/charts
+
+jobs:
+  tests:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      packages: read # the server image the live suites run against
+    secrets: inherit # DEPLOY_KEY_WARP_SQL_JS, DEPLOY_KEY_HARDCHARGER_JS
+
+  github-release:
+    needs: tests
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: azure/setup-helm@v5
+      - name: The tag matches package.json, manifest.json and the chart, and CHANGELOG.md has its section
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ -n "$version" ] && [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "::error::not a vX.Y.Z tag: $GITHUB_REF_NAME"; exit 1; }
+          [ "$(node -p 'require("./package.json").version')" = "$version" ] || { echo "::error::package.json is not $version"; exit 1; }
+          [ "$(node -p 'require("./manifest.json").version')" = "$version" ] || { echo "::error::manifest.json is not $version"; exit 1; }
+          [ "$(sed -n 's/^version: *//p' charts/hardcharger-mcp/Chart.yaml)" = "$version" ] || { echo "::error::Chart.yaml version is not $version"; exit 1; }
+          grep -q "^appVersion: \"$version\"$" charts/hardcharger-mcp/Chart.yaml || { echo "::error::Chart.yaml appVersion is not $version"; exit 1; }
+          grep -q "^## \[$version\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-tarballs
+          path: .clients
+      - run: npm ci
+      - run: npm run build:mcpb
+      - run: npm pack
+      - run: helm package charts/hardcharger-mcp --destination build/chart
+      - name: Release notes from CHANGELOG
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          [ -s release_notes.md ] || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            build/hardcharger-mcp-*.mcpb
+            build/hardcharger-mcp-*.mcpb.sha256
+            build/hardcharger-mcp.mcpb
+            build/hardcharger-mcp.mcpb.sha256
+            build/chart/*.tgz
+            gizmodata-hardcharger-mcp-*.tgz
+          body_path: release_notes.md
+
+  image:
+    name: Container image and Helm chart to GHCR
+    needs: github-release
+    if: vars.IMAGE_PUBLISH_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-tarballs
+          path: .clients
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      # All JavaScript: one build serves both architectures.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          push: true
+      - uses: azure/setup-helm@v5
+      - name: Push the chart
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.github-release.outputs.version }}
+        run: |
+          helm package charts/hardcharger-mcp --destination build/chart
+          printf '%s' "$TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm push "build/chart/hardcharger-mcp-$VERSION.tgz" "$CHART_OCI"
+
+  npm:
+    needs: github-release
+    if: vars.NPM_PUBLISH_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: npm new enough for trusted publishing
+        run: npm install -g npm@latest && npm --version
+      - name: "@gizmodata/hardcharger is on npm in the range package.json names"
+        run: |
+          range=$(node -p 'require("./package.json").dependencies["@gizmodata/hardcharger"]')
+          found=$(npm view "@gizmodata/hardcharger@$range" version 2>/dev/null | tail -1)
+          [ -n "$found" ] || { echo "::error::@gizmodata/hardcharger@$range is not on npm: publish it first, or this package can't be installed"; exit 1; }
+          echo "@gizmodata/hardcharger@$range: $found"
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-tarballs
+          path: .clients
+      - run: npm ci
+      - run: npm run build
+      # restricted: the package stays private to the npm organization. Making it public is a
+      # decision for GizmoData, not a default.
+      - name: Publish
+        env:
+          HARDCHARGER_MCP_RELEASE: "1"
+        run: npm publish --access restricted

@@ -1,0 +1,70 @@
+{
+  "name": "@gizmodata/hardcharger-mcp",
+  "version": "0.1.0",
+  "description": "Model Context Protocol (MCP) server and Claude Desktop extension for Hardcharger™, GizmoData™'s DuckDB 2.0 server",
+  "author": "GizmoData LLC",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/server.js",
+  "types": "./dist/server.d.ts",
+  "bin": {
+    "hardcharger-mcp": "dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gizmodata/hardcharger-mcp.git"
+  },
+  "homepage": "https://github.com/gizmodata/hardcharger-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/gizmodata/hardcharger-mcp/issues"
+  },
+  "keywords": [
+    "hardcharger",
+    "gizmodata",
+    "warp-sql",
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "arrow",
+    "duckdb",
+    "sql"
+  ],
+  "scripts": {
+    "clients": "scripts/install-clients.sh",
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "npm run build && tsc -p tsconfig.test.json --noEmit",
+    "lint": "eslint src test scripts --fix",
+    "lint:ci": "eslint src test scripts && node scripts/check-lock.mjs",
+    "test": "npm run build && node --test \"test/unit/**/*.test.ts\"",
+    "test:live": "npm run build && node scripts/run-live.mjs",
+    "test:examples": "npm run build && node scripts/run-examples.mjs",
+    "build:mcpb": "bash scripts/build-mcpb.sh",
+    "prepublishOnly": "node scripts/guard-publish.mjs"
+  },
+  "dependencies": {
+    "@gizmodata/hardcharger": "^0.1.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "apache-arrow": "^21.2.0",
+    "jose": "^6.2.12",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@anthropic-ai/mcpb": "^2.1.2",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "ajv": "^8.20.0",
+    "eslint": "^10.13.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.2"
+  }
+}

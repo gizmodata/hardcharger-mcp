@@ -1,0 +1,369 @@
+{
+  "manifest_version": "0.3",
+  "name": "hardcharger",
+  "display_name": "Hardcharger",
+  "version": "0.1.0",
+  "description": "Query your Hardcharger™ (GizmoData™'s DuckDB 2.0 server) from Claude.",
+  "long_description": "Connects Claude Desktop to a Hardcharger server over Warp SQL (HTTPS) with the Hardcharger JavaScript client: pure JavaScript, no native driver, the same bundle on macOS, Windows and Linux.\n\nTools: list catalogs, schemas and tables; describe a table (columns, types, constraints, estimated rows); run parameterised SQL queries with row caps and server-side timeouts; explain a query; server info. Writes are disabled unless you enable them. A `hardcharger://{connection}/schema/{catalog}/{schema}/{table}` resource returns table DDL.\n\nSign in with a password, a signed sign-in token, a client certificate (mutual TLS), or your identity provider in the browser (login_sso). Up to three Hardcharger servers can be configured; every tool takes an optional connection argument and use_connection switches the default.\n\nThe server runs on your machine and connects directly to the Hardcharger host you configure (VPN / private networks work). Credentials are stored in your OS keychain by Claude Desktop and never appear in tool output or errors.",
+  "author": {
+    "name": "GizmoData LLC",
+    "email": "info@gizmodata.com",
+    "url": "https://gizmodata.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gizmodata/hardcharger-mcp"
+  },
+  "homepage": "https://github.com/gizmodata/hardcharger-mcp",
+  "documentation": "https://github.com/gizmodata/hardcharger-mcp#readme",
+  "support": "https://github.com/gizmodata/hardcharger-mcp/issues",
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/cli.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/cli.js"
+      ],
+      "env": {
+        "HARDCHARGER_CONNECTION_NAME": "${user_config.connection_name}",
+        "HARDCHARGER_URI": "${user_config.uri}",
+        "HARDCHARGER_USERNAME": "${user_config.username}",
+        "HARDCHARGER_PASSWORD": "${user_config.password}",
+        "HARDCHARGER_TOKEN": "${user_config.token}",
+        "HARDCHARGER_MTLS_CERT": "${user_config.mtls_cert}",
+        "HARDCHARGER_MTLS_KEY": "${user_config.mtls_key}",
+        "HARDCHARGER_TLS_ROOTS": "${user_config.tls_roots}",
+        "HARDCHARGER_TLS_SKIP_VERIFY": "${user_config.tls_skip_verify}",
+        "HARDCHARGER_DEFAULT_CATALOG": "${user_config.default_catalog}",
+        "HARDCHARGER_DEFAULT_SCHEMA": "${user_config.default_schema}",
+        "HARDCHARGER_ALLOW_WRITES": "${user_config.allow_writes}",
+        "HARDCHARGER_MAX_ROWS": "${user_config.max_rows}",
+        "HARDCHARGER_MAX_CELL_CHARS": "${user_config.max_cell_chars}",
+        "HARDCHARGER_QUERY_TIMEOUT_SECONDS": "${user_config.query_timeout_seconds}",
+        "HARDCHARGER_ENABLE_SSO": "${user_config.enable_sso}",
+        "HARDCHARGER_OAUTH_PORT": "${user_config.oauth_port}",
+        "HARDCHARGER_2_NAME": "${user_config.connection2_name}",
+        "HARDCHARGER_2_URI": "${user_config.connection2_uri}",
+        "HARDCHARGER_2_USERNAME": "${user_config.connection2_username}",
+        "HARDCHARGER_2_PASSWORD": "${user_config.connection2_password}",
+        "HARDCHARGER_2_TOKEN": "${user_config.connection2_token}",
+        "HARDCHARGER_2_TLS_SKIP_VERIFY": "${user_config.connection2_tls_skip_verify}",
+        "HARDCHARGER_2_DEFAULT_CATALOG": "${user_config.connection2_default_catalog}",
+        "HARDCHARGER_2_DEFAULT_SCHEMA": "${user_config.connection2_default_schema}",
+        "HARDCHARGER_3_NAME": "${user_config.connection3_name}",
+        "HARDCHARGER_3_URI": "${user_config.connection3_uri}",
+        "HARDCHARGER_3_USERNAME": "${user_config.connection3_username}",
+        "HARDCHARGER_3_PASSWORD": "${user_config.connection3_password}",
+        "HARDCHARGER_3_TOKEN": "${user_config.connection3_token}",
+        "HARDCHARGER_3_TLS_SKIP_VERIFY": "${user_config.connection3_tls_skip_verify}",
+        "HARDCHARGER_3_DEFAULT_CATALOG": "${user_config.connection3_default_catalog}",
+        "HARDCHARGER_3_DEFAULT_SCHEMA": "${user_config.connection3_default_schema}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "list_connections",
+      "description": "List the configured Hardcharger connections and which one is current (no credentials)."
+    },
+    {
+      "name": "use_connection",
+      "description": "Make a named connection the default for subsequent tool calls."
+    },
+    {
+      "name": "list_catalogs",
+      "description": "List the catalogs (attached databases) visible to the connected user."
+    },
+    {
+      "name": "list_schemas",
+      "description": "List schemas, optionally filtered to one catalog; system schemas are hidden unless include_system is true."
+    },
+    {
+      "name": "list_tables",
+      "description": "List tables and views (with type), optionally filtered by catalog, schema and a LIKE pattern."
+    },
+    {
+      "name": "describe_table",
+      "description": "Columns, types, nullability, constraints and estimated row count for a table or view."
+    },
+    {
+      "name": "use_schema",
+      "description": "Set the session's default catalog and/or schema for unqualified table names."
+    },
+    {
+      "name": "run_query",
+      "description": "Run a SQL query (DuckDB dialect) with optional bound parameters; returns a row-capped Markdown table plus JSON."
+    },
+    {
+      "name": "explain_query",
+      "description": "Return DuckDB's EXPLAIN plan for a query without executing it."
+    },
+    {
+      "name": "execute_statement",
+      "description": "Execute a DML/DDL statement and return the affected-row count (only available when writes are enabled)."
+    },
+    {
+      "name": "server_info",
+      "description": "Hardcharger/DuckDB versions, the signed-in user, the connection URI, effective limits and the extension version."
+    },
+    {
+      "name": "login_sso",
+      "description": "Sign in through the server's identity provider in your browser (only available when SSO is enabled)."
+    }
+  ],
+  "tools_generated": false,
+  "keywords": [
+    "hardcharger",
+    "gizmodata",
+    "warp-sql",
+    "sql",
+    "duckdb",
+    "arrow",
+    "database",
+    "analytics"
+  ],
+  "license": "Apache-2.0",
+  "privacy_policies": [
+    "https://github.com/gizmodata/hardcharger-mcp#-privacy-policy",
+    "https://gizmodata.com/privacy-policy"
+  ],
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=22.19.0"
+    }
+  },
+  "user_config": {
+    "connection_name": {
+      "type": "string",
+      "title": "Connection name",
+      "description": "Name for this (primary) connection, used with the connection argument of tools. Default: default.",
+      "required": false
+    },
+    "uri": {
+      "type": "string",
+      "title": "Hardcharger URI",
+      "description": "The server, as hardcharger://host[:port]: TLS to port 31337 unless the URI says otherwise; add ?tls=false for a server without TLS (development). The host must be reachable from this machine (e.g. over your VPN).",
+      "required": true
+    },
+    "username": {
+      "type": "string",
+      "title": "Username",
+      "description": "Username for password sign-in. A user with read-only privileges is recommended. Leave blank for a token, a client certificate or SSO.",
+      "sensitive": true,
+      "required": false
+    },
+    "password": {
+      "type": "string",
+      "title": "Password",
+      "description": "Password for password sign-in.",
+      "sensitive": true,
+      "required": false
+    },
+    "token": {
+      "type": "string",
+      "title": "Sign-in token",
+      "description": "A signed sign-in token (JWT) the server trusts, e.g. one minted for Hardcharger or your identity provider's ID token. Instead of a username and password.",
+      "sensitive": true,
+      "required": false
+    },
+    "mtls_cert": {
+      "type": "file",
+      "title": "Client certificate (PEM)",
+      "description": "For mutual TLS. Without a username, password or token the certificate is the credential (the server must offer certificate sign-in).",
+      "required": false
+    },
+    "mtls_key": {
+      "type": "file",
+      "title": "Client certificate key (PEM)",
+      "description": "The private key of the client certificate.",
+      "required": false
+    },
+    "tls_roots": {
+      "type": "file",
+      "title": "Server CA (PEM)",
+      "description": "The CA that issued the server's certificate, when it is a private CA.",
+      "required": false
+    },
+    "tls_skip_verify": {
+      "type": "boolean",
+      "title": "Skip TLS certificate verification",
+      "description": "Accept self-signed / untrusted server certificates.",
+      "default": false,
+      "required": false
+    },
+    "default_catalog": {
+      "type": "string",
+      "title": "Default catalog",
+      "description": "Optional catalog (database) for unqualified table names. Leave blank for the server default.",
+      "required": false
+    },
+    "default_schema": {
+      "type": "string",
+      "title": "Default schema",
+      "description": "Optional schema for unqualified table names. Leave blank for the server default.",
+      "required": false
+    },
+    "allow_writes": {
+      "type": "boolean",
+      "title": "Allow writes",
+      "description": "Enable INSERT/UPDATE/DELETE/DDL via the execute_statement tool. Keep off unless you need it; the database user's privileges remain the real security boundary.",
+      "default": false,
+      "required": false
+    },
+    "max_rows": {
+      "type": "number",
+      "title": "Maximum rows per query",
+      "description": "Upper bound on rows returned by run_query.",
+      "default": 500,
+      "min": 1,
+      "max": 100000,
+      "required": false
+    },
+    "max_cell_chars": {
+      "type": "number",
+      "title": "Maximum characters per cell",
+      "description": "Longer values are truncated with …",
+      "default": 200,
+      "min": 1,
+      "max": 100000,
+      "required": false
+    },
+    "query_timeout_seconds": {
+      "type": "number",
+      "title": "Query timeout (seconds)",
+      "description": "The server cancels statements running longer than this (0 disables the timeout).",
+      "default": 60,
+      "min": 0,
+      "max": 86400,
+      "required": false
+    },
+    "enable_sso": {
+      "type": "boolean",
+      "title": "Enable SSO sign-in tool",
+      "description": "Adds a login_sso tool that signs in through the server's identity provider in your browser (leave username, password and token blank).",
+      "default": false,
+      "required": false
+    },
+    "oauth_port": {
+      "type": "number",
+      "title": "SSO port",
+      "description": "Port of the server's browser sign-in (only used by login_sso).",
+      "default": 31339,
+      "min": 1,
+      "max": 65535,
+      "required": false
+    },
+    "connection2_name": {
+      "type": "string",
+      "title": "Connection 2: name",
+      "description": "Optional name for an additional Hardcharger server (default server2). Leave the URI blank to disable this slot.",
+      "required": false
+    },
+    "connection2_uri": {
+      "type": "string",
+      "title": "Connection 2: URI",
+      "description": "hardcharger://host[:port][?tls=false] of the additional server. Blank disables this connection.",
+      "required": false
+    },
+    "connection2_username": {
+      "type": "string",
+      "title": "Connection 2: username",
+      "description": "Username for password sign-in.",
+      "sensitive": true,
+      "required": false
+    },
+    "connection2_password": {
+      "type": "string",
+      "title": "Connection 2: password",
+      "description": "Password for password sign-in.",
+      "sensitive": true,
+      "required": false
+    },
+    "connection2_token": {
+      "type": "string",
+      "title": "Connection 2: sign-in token",
+      "description": "A signed sign-in token (JWT), instead of a username and password.",
+      "sensitive": true,
+      "required": false
+    },
+    "connection2_default_catalog": {
+      "type": "string",
+      "title": "Connection 2: default catalog",
+      "description": "Optional catalog for unqualified table names.",
+      "required": false
+    },
+    "connection2_default_schema": {
+      "type": "string",
+      "title": "Connection 2: default schema",
+      "description": "Optional schema for unqualified table names.",
+      "required": false
+    },
+    "connection2_tls_skip_verify": {
+      "type": "boolean",
+      "title": "Connection 2: skip TLS certificate verification",
+      "description": "Accept self-signed / untrusted certificates.",
+      "default": false,
+      "required": false
+    },
+    "connection3_name": {
+      "type": "string",
+      "title": "Connection 3: name",
+      "description": "Optional name for an additional Hardcharger server (default server3). Leave the URI blank to disable this slot.",
+      "required": false
+    },
+    "connection3_uri": {
+      "type": "string",
+      "title": "Connection 3: URI",
+      "description": "hardcharger://host[:port][?tls=false] of the additional server. Blank disables this connection.",
+      "required": false
+    },
+    "connection3_username": {
+      "type": "string",
+      "title": "Connection 3: username",
+      "description": "Username for password sign-in.",
+      "sensitive": true,
+      "required": false
+    },
+    "connection3_password": {
+      "type": "string",
+      "title": "Connection 3: password",
+      "description": "Password for password sign-in.",
+      "sensitive": true,
+      "required": false
+    },
+    "connection3_token": {
+      "type": "string",
+      "title": "Connection 3: sign-in token",
+      "description": "A signed sign-in token (JWT), instead of a username and password.",
+      "sensitive": true,
+      "required": false
+    },
+    "connection3_default_catalog": {
+      "type": "string",
+      "title": "Connection 3: default catalog",
+      "description": "Optional catalog for unqualified table names.",
+      "required": false
+    },
+    "connection3_default_schema": {
+      "type": "string",
+      "title": "Connection 3: default schema",
+      "description": "Optional schema for unqualified table names.",
+      "required": false
+    },
+    "connection3_tls_skip_verify": {
+      "type": "boolean",
+      "title": "Connection 3: skip TLS certificate verification",
+      "description": "Accept self-signed / untrusted certificates.",
+      "default": false,
+      "required": false
+    }
+  }
+}

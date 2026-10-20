@@ -1,0 +1,19 @@
+apiVersion: v2
+name: hardcharger-mcp
+description: Hardcharger™ MCP server (Streamable HTTP transport) for remote MCP connectors such as Claude.ai
+type: application
+# Chart and app versions track the npm package; the release workflow asserts they match package.json.
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/gizmodata/hardcharger-mcp
+sources:
+  - https://github.com/gizmodata/hardcharger-mcp
+keywords:
+  - hardcharger
+  - warp-sql
+  - mcp
+  - model-context-protocol
+  - claude
+maintainers:
+  - name: GizmoData LLC
+    url: https://gizmodata.com

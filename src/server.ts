@@ -1,0 +1,921 @@
+// Transport-agnostic MCP server: tool + resource definitions for Hardcharger.
+
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
+
+import type { Connection } from "@gizmodata/hardcharger";
+import type { Table } from "apache-arrow";
+
+import { HardchargerConnection, QueryTimeoutError, errorCode, type McpConfig } from "./connection.js";
+import type { AuthenticatedUser } from "./oauth.js";
+import type { SessionInfo } from "./sessions.js";
+import {
+  cellToJson,
+  cellToText,
+  escapeMarkdownCell,
+  formatTable,
+  resultFooter,
+  toMarkdownTable,
+  truncateText,
+} from "./format.js";
+import { boundCount, convertParams, paramsSchema, PARAMS_DESCRIPTION, ParameterError, type BoundParams } from "./params.js";
+import { ConnectionRegistry } from "./registry.js";
+import { runSsoLogin } from "./sso.js";
+import {
+  countPlaceholders,
+  guardStatement,
+  normalizeStatement,
+  WRAPPER_ALIAS,
+  wrapWithLimit,
+} from "./sql-guard.js";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.js";
+
+export interface ServerContext {
+  registry: ConnectionRegistry;
+  config: McpConfig;
+  transport: "stdio" | "http";
+  /** Caller verified by the HTTP transport's OAuth layer (absent on stdio or with a static bearer token). */
+  user?: AuthenticatedUser;
+  /** The caller's per-user session (HTTP transport with OAuth). */
+  session?: SessionInfo;
+  /** Called once a tool result has told the caller their previous session expired. */
+  acknowledgeSessionReset?: () => void;
+}
+
+function instructions(registry: ConnectionRegistry, transport: "stdio" | "http", perUser: boolean): string {
+  const multi = registry.names().length > 1;
+  const scope = transport === "http" && !perUser ? " Session state (USE, use_connection) is shared by every client of this server." : "";
+  return (
+    "Hardcharger is GizmoData's DuckDB 2.0 server (it speaks Warp SQL), so DuckDB SQL syntax and functions apply. " +
+    "Start with list_catalogs / list_schemas / list_tables / describe_table to discover the schema, then " +
+    "use run_query for SELECT queries. Results are capped at a configurable number of rows; use LIMIT, " +
+    "aggregation, or WHERE filters to keep results small. Bind user-supplied literals with ? placeholders " +
+    "and the params argument instead of interpolating them into SQL. Unless HARDCHARGER_ALLOW_WRITES is " +
+    "enabled the server is read-only. Unqualified table names resolve against the session's current " +
+    "catalog and schema (see server_info); use use_schema or fully qualified names to work elsewhere." +
+    scope +
+    (multi
+      ? ` Several Hardcharger servers are configured (${registry.names().join(", ")}; current: ${registry.current()}). ` +
+        "Every tool accepts an optional connection argument, or call use_connection to switch the default; " +
+        "list_connections shows them."
+      : "")
+  );
+}
+
+/** Result envelope metadata so a client can tell which build answered without calling server_info. */
+const RESULT_META = { hardcharger_mcp: { name: PACKAGE_NAME, version: PACKAGE_VERSION } };
+
+function text(body: string, structured?: Record<string, unknown>): CallToolResult {
+  // Hosts such as Claude Desktop show structuredContent to the model but not
+  // _meta, so the version travels in both.
+  return {
+    content: [{ type: "text", text: body }],
+    structuredContent: { ...structured, mcp_server_version: PACKAGE_VERSION },
+    _meta: RESULT_META,
+  };
+}
+
+function errorResult(message: string): CallToolResult {
+  // No structuredContent here: clients validate it against run_query's
+  // output schema even for errors. The version rides in the text instead.
+  return {
+    isError: true,
+    content: [{ type: "text", text: `Error: ${message}\n\n(${PACKAGE_NAME} ${PACKAGE_VERSION})` }],
+    _meta: RESULT_META,
+  };
+}
+
+/**
+ * Converts a thrown error into a redacted, user-facing message. The client's errors
+ * answered by the server end with their code, SQLSTATE, HTTP status and request id, e.g.
+ *   "Catalog Error: Table with name nope does not exist! ... (sql_error, SQLSTATE 42P01,
+ *    HTTP 400, request r_...)", which is what a bug report needs, so they pass through.
+ */
+export function describeError(err: unknown, redact: (text: string) => string): string {
+  let text = (err instanceof Error ? err.message : String(err)).replace(/^\[hardcharger\] /u, "").trim();
+  // Every client error has a code; the ones raised before an HTTP answer (transport_error,
+  // invalid_argument, ...) don't say it in their message, so it is added for the caller.
+  const code = errorCode(err) ?? errorCode((err as { cause?: unknown })?.cause);
+  if (code !== undefined && !text.includes(code)) text += ` (${code})`;
+  return redact(text);
+}
+
+/** Rejects a call whose parameter count does not match the statement's placeholders. */
+function assertParameterCount(sql: string, bound: BoundParams | undefined): void {
+  const expected = countPlaceholders(sql);
+  const supplied = boundCount(bound);
+  if (expected === supplied) return;
+  const ph = (n: number) => `${n} placeholder${n === 1 ? "" : "s"}`;
+  const pv = (n: number) => `${n} parameter${n === 1 ? "" : "s"}`;
+  throw new ParameterError(
+    `The statement has ${ph(expected)} (? or $n) but ${pv(supplied)} ${supplied === 1 ? "was" : "were"} supplied in params. ` +
+      "Pass exactly one value per placeholder, in order.",
+  );
+}
+
+/**
+ * Wraps a raw Zod shape so the SDK advertises it as JSON Schema 2020-12.
+ * The MCP SDK converts Zod v4 schemas with a draft-07 target and stamps
+ * `$schema: draft-07` on every tool schema (typescript-sdk #2721); strict
+ * hosts such as Claude Desktop reject such tools before calling them.
+ * Zod merges `.meta()` into the generated schema, overriding the stamp.
+ */
+const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
+function jsonSchema2020<T extends z.ZodRawShape>(shape: T) {
+  return z.object(shape).meta({ $schema: JSON_SCHEMA_2020_12 });
+}
+
+/**
+ * Per-backend temporary schemas of an attached Postgres database
+ * (`pg_temp_N` / `pg_toast_temp_N`). They hold nothing a client can use,
+ * one pair exists per Postgres backend, and there can be hundreds, so
+ * list_schemas never enumerates them.
+ */
+export function isTransientSchema(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower.startsWith("pg_temp_") || lower.startsWith("pg_toast_temp_");
+}
+
+/**
+ * Schemas DuckDB and the Postgres-compatibility layer create in every
+ * catalog. Attached Postgres databases also expose one `pg_temp_N` /
+ * `pg_toast_temp_N` pair per backend, which can run into the hundreds.
+ */
+export function isSystemSchema(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    isTransientSchema(name) ||
+    lower === "information_schema" ||
+    lower === "pg_catalog" ||
+    lower === "pg_toast"
+  );
+}
+
+const sqlArg = z.string().min(1).describe("A single SQL statement (DuckDB dialect).");
+const connectionArg = z
+  .string()
+  .optional()
+  .describe("Name of the configured connection to use (see list_connections); defaults to the current one.");
+
+/** Identifier quoting for generated SQL (used only for DDL synthesis). */
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
+interface TableRef {
+  catalog: string;
+  schema: string;
+  table: string;
+}
+
+/** Table/view DDL from DuckDB's catalog functions, or synthesized from information_schema. */
+async function fetchDdl(connection: HardchargerConnection, ref: TableRef): Promise<string | null> {
+  const fromTables = await connection.query(
+    "SELECT sql FROM duckdb_tables() WHERE database_name = ? AND schema_name = ? AND table_name = ?",
+    [ref.catalog, ref.schema, ref.table],
+  );
+  if (fromTables.numRows > 0) {
+    const sql = fromTables.getChildAt(0)?.get(0);
+    if (typeof sql === "string" && sql.trim()) return sql;
+  }
+  const fromViews = await connection.query(
+    "SELECT sql FROM duckdb_views() WHERE database_name = ? AND schema_name = ? AND view_name = ?",
+    [ref.catalog, ref.schema, ref.table],
+  );
+  if (fromViews.numRows > 0) {
+    const sql = fromViews.getChildAt(0)?.get(0);
+    if (typeof sql === "string" && sql.trim()) return sql;
+  }
+  const cols = await connection.query(
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns " +
+      "WHERE table_catalog = ? AND table_schema = ? AND table_name = ? ORDER BY ordinal_position",
+    [ref.catalog, ref.schema, ref.table],
+  );
+  if (cols.numRows === 0) return null;
+  const lines: string[] = [];
+  for (let i = 0; i < cols.numRows; i++) {
+    const name = String(cols.getChildAt(0)?.get(i));
+    const type = String(cols.getChildAt(1)?.get(i));
+    const nullable = String(cols.getChildAt(2)?.get(i)) !== "NO";
+    lines.push(`  ${quoteIdent(name)} ${type}${nullable ? "" : " NOT NULL"}`);
+  }
+  return `CREATE TABLE ${quoteIdent(ref.catalog)}.${quoteIdent(ref.schema)}.${quoteIdent(ref.table)} (\n${lines.join(",\n")}\n);`;
+}
+
+/** The string column `name` of a metadata table, row by row. */
+function column(table: Table, name: string): string[] {
+  const vector = table.getChild(name);
+  const out: string[] = [];
+  for (let i = 0; i < table.numRows; i++) out.push(String(vector?.get(i) ?? ""));
+  return out;
+}
+
+async function listCatalogs(c: Connection): Promise<string[]> {
+  return column(await c.metadata.catalogs(), "catalog_name");
+}
+
+async function listSchemas(c: Connection, catalog?: string): Promise<Array<{ catalog: string; schema: string }>> {
+  const t = await c.metadata.dbSchemas(catalog !== undefined ? { catalog } : {});
+  const catalogs = column(t, "catalog_name");
+  return column(t, "db_schema_name").map((schema, i) => ({ catalog: catalogs[i]!, schema }));
+}
+
+interface TableInfo {
+  catalog: string;
+  schema: string;
+  tableName: string;
+  tableType: string;
+}
+
+async function listTables(c: Connection, catalog?: string, schema?: string, like?: string): Promise<TableInfo[]> {
+  const options: { catalog?: string; dbSchemaFilterPattern?: string; tableNameFilterPattern?: string } = {};
+  if (catalog !== undefined) options.catalog = catalog;
+  if (schema !== undefined) options.dbSchemaFilterPattern = schema;
+  if (like !== undefined) options.tableNameFilterPattern = like;
+  const t = await c.metadata.tables(options);
+  const catalogs = column(t, "catalog_name");
+  const schemas = column(t, "db_schema_name");
+  const types = column(t, "table_type");
+  return column(t, "table_name").map((tableName, i) => ({
+    catalog: catalogs[i]!,
+    schema: schemas[i]!,
+    tableName,
+    tableType: types[i]!,
+  }));
+}
+
+/** Builds the McpServer with every tool/resource registered against `ctx`. */
+export function createServer(ctx: ServerContext): McpServer {
+  const { registry, config } = ctx;
+  const redact = (t: string) => registry.redact(t);
+  const server = new McpServer(
+    { name: PACKAGE_NAME, version: PACKAGE_VERSION },
+    { instructions: instructions(registry, ctx.transport, ctx.session !== undefined) },
+  );
+
+  /**
+   * Wraps a tool body so every failure becomes a redacted isError result,
+   * and tells the caller once when their previous session expired (their
+   * use_schema / use_connection choices no longer apply).
+   */
+  const tool = <T>(fn: (args: T) => Promise<CallToolResult>) => {
+    return async (args: T): Promise<CallToolResult> => {
+      let result: CallToolResult;
+      try {
+        result = await fn(args);
+      } catch (err) {
+        return errorResult(describeError(err, redact));
+      }
+      const resetAt = ctx.session?.resetAt;
+      if (resetAt && !result.isError) {
+        const note =
+          `(Note: your previous session expired after ${config.mcpSessionIdleSeconds}s idle at ${resetAt.toISOString()}; ` +
+          "a new one started with the configured defaults, so earlier use_schema / use_connection choices no longer apply.)";
+        const first = result.content.find((c): c is { type: "text"; text: string } => c.type === "text");
+        if (first) first.text = `${first.text}\n\n${note}`;
+        else result.content.push({ type: "text", text: note });
+        if (result.structuredContent) {
+          result.structuredContent = { ...result.structuredContent, session_reset: { expired_at: resetAt.toISOString() } };
+        }
+        ctx.acknowledgeSessionReset?.();
+      }
+      return result;
+    };
+  };
+
+  /** Resolves the connection for a tool call (throws UnknownConnectionError). */
+  const conn = (name?: string) => registry.get(name);
+
+  server.registerTool(
+    "list_connections",
+    {
+      title: "List connections",
+      description:
+        "Lists the configured Hardcharger connections (name, host, auth method, default catalog/schema) and " +
+        "which one is current. Credentials are never returned.",
+      inputSchema: jsonSchema2020({}),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    tool(async () => {
+      const rows = registry.summaries();
+      const md = toMarkdownTable(
+        ["name", "host", "port", "tls", "auth", "default catalog", "default schema", "current"],
+        rows.map((r) => [
+          escapeMarkdownCell(r.name),
+          escapeMarkdownCell(r.host),
+          String(r.port),
+          r.tls ? "yes" : "no",
+          escapeMarkdownCell(r.auth),
+          escapeMarkdownCell(r.default_catalog ?? ""),
+          escapeMarkdownCell(r.default_schema ?? ""),
+          r.current ? "✓" : "",
+        ]),
+      );
+      return text(md, { connections: rows, current: registry.current() });
+    }),
+  );
+
+  server.registerTool(
+    "use_connection",
+    {
+      title: "Switch connection",
+      description:
+        "Makes the named connection the default for subsequent tool calls (see list_connections). " +
+        "Tools also accept a per-call connection argument.",
+      inputSchema: jsonSchema2020({ name: z.string().min(1).describe("Connection name.") }),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    tool(async ({ name }) => {
+      const canonical = registry.use(name);
+      const c = registry.configFor(canonical);
+      return text(`Current connection is now "${canonical}" (${c.host}:${c.port}).`, {
+        current: canonical,
+        host: c.host,
+        port: c.port,
+      });
+    }),
+  );
+
+  server.registerTool(
+    "list_catalogs",
+    {
+      title: "List catalogs",
+      description: "Lists the catalogs (attached databases) visible to the connected Hardcharger user.",
+      inputSchema: jsonSchema2020({ connection: connectionArg }),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    tool(async ({ connection }) => {
+      const catalogs = await conn(connection).run((c) => listCatalogs(c));
+      const body = catalogs.length
+        ? catalogs.map((c) => `- ${c}`).join("\n")
+        : "(no catalogs visible)";
+      return text(body, { catalogs });
+    }),
+  );
+
+  server.registerTool(
+    "list_schemas",
+    {
+      title: "List schemas",
+      description:
+        "Lists schemas, optionally filtered to one catalog. System schemas (information_schema, " +
+        "pg_catalog, pg_toast) are hidden unless include_system is true; the per-backend temp schemas " +
+        "of attached Postgres databases (pg_temp_N, pg_toast_temp_N) are never listed. DuckDB keeps " +
+        "information_schema and pg_catalog in the `system` catalog only, so a user catalog normally " +
+        "lists just its own schemas even with include_system.",
+      inputSchema: jsonSchema2020({
+        catalog: z.string().optional().describe("Catalog name to filter by (exact match)."),
+        include_system: z
+          .boolean()
+          .optional()
+          .describe("Also list system schemas (information_schema, pg_catalog, pg_toast). Default false."),
+        connection: connectionArg,
+      }),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    tool(async ({ catalog, include_system, connection }) => {
+      const found = await conn(connection).run((c) => listSchemas(c, catalog));
+      const all = found.filter((s) => !isTransientSchema(s.schema));
+      const hiddenTemp = found.length - all.length;
+      const schemas = include_system ? all : all.filter((s) => !isSystemSchema(s.schema));
+      const hidden = all.length - schemas.length;
+      const rows = schemas.map((s) => [escapeMarkdownCell(s.catalog), escapeMarkdownCell(s.schema)]);
+      let body = rows.length ? toMarkdownTable(["catalog", "schema"], rows) : "(no schemas found)";
+      if (hidden > 0) body += `\n\n(${hidden} system schema${hidden === 1 ? "" : "s"} hidden; pass include_system: true to list them.)`;
+      return text(body, { schemas, hidden_system_schemas: hidden, hidden_temp_schemas: hiddenTemp });
+    }),
+  );
+
+  server.registerTool(
+    "list_tables",
+    {
+      title: "List tables",
+      description:
+        "Lists tables and views with their type. Filters are optional; `like` is a SQL LIKE pattern " +
+        "on the table name (e.g. 'orders%').",
+      inputSchema: jsonSchema2020({
+        catalog: z.string().optional().describe("Catalog name (exact match)."),
+        schema: z.string().optional().describe("Schema name (SQL LIKE pattern, e.g. 'main')."),
+        like: z.string().optional().describe("Table-name LIKE pattern, e.g. 'cust%'."),
+        connection: connectionArg,
+      }),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    tool(async ({ catalog, schema, like, connection }) => {
+      const tables = await conn(connection).run((c) => listTables(c, catalog, schema, like));
+      const rows = tables.map((t) => [
+        escapeMarkdownCell(t.catalog),
+        escapeMarkdownCell(t.schema),
+        escapeMarkdownCell(t.tableName),
+        escapeMarkdownCell(t.tableType),
+      ]);
+      const body = rows.length
+        ? toMarkdownTable(["catalog", "schema", "table", "type"], rows)
+        : "(no tables matched)";
+      return text(body, { tables });
+    }),
+  );
+
+  server.registerTool(
+    "describe_table",
+    {
+      title: "Describe table",
+      description:
+        "Describes a table or view: columns with types and nullability, constraints, and an " +
+        "estimated row count when it is cheap to obtain. Provide schema/catalog when the table " +
+        "name is ambiguous.",
+      inputSchema: jsonSchema2020({
+        table: z.string().min(1).describe("Table or view name (exact match)."),
+        schema: z.string().optional().describe("Schema name (exact match)."),
+        catalog: z.string().optional().describe("Catalog name (exact match)."),
+        connection: connectionArg,
+      }),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    tool(async ({ table, schema, catalog, connection: connectionName }) => {
+      const connection = conn(connectionName);
+      const filters: string[] = ["table_name = ?"];
+      const params: Array<string> = [table];
+      if (schema !== undefined) {
+        filters.push("table_schema = ?");
+        params.push(schema);
+      }
+      if (catalog !== undefined) {
+        filters.push("table_catalog = ?");
+        params.push(catalog);
+      }
+      const columns = await connection.query(
+        "SELECT table_catalog, table_schema, table_name, column_name, data_type, is_nullable, column_default " +
+          `FROM information_schema.columns WHERE ${filters.join(" AND ")} ORDER BY table_catalog, table_schema, ordinal_position`,
+        params,
+      );
+      if (columns.numRows === 0) {
+        return errorResult(
+          `Table "${table}" not found${schema ? ` in schema "${schema}"` : ""}${catalog ? ` (catalog "${catalog}")` : ""}. ` +
+            "Use list_tables to find the exact name.",
+        );
+      }
+      const locations = new Set<string>();
+      for (let i = 0; i < columns.numRows; i++) {
+        locations.add(`${columns.getChildAt(0)?.get(i)}.${columns.getChildAt(1)?.get(i)}`);
+      }
+      if (locations.size > 1) {
+        return errorResult(
+          `Table "${table}" exists in multiple locations: ${[...locations].join(", ")}. ` +
+            "Pass schema (and catalog) to disambiguate.",
+        );
+      }
+      const ref: TableRef = {
+        catalog: String(columns.getChildAt(0)?.get(0)),
+        schema: String(columns.getChildAt(1)?.get(0)),
+        table,
+      };
+
+      const colRows: string[][] = [];
+      const colJson: Array<Record<string, unknown>> = [];
+      for (let i = 0; i < columns.numRows; i++) {
+        const name = String(columns.getChildAt(3)?.get(i));
+        const type = String(columns.getChildAt(4)?.get(i));
+        const nullable = String(columns.getChildAt(5)?.get(i)) === "YES";
+        const def = columns.getChildAt(6)?.get(i);
+        colRows.push([
+          escapeMarkdownCell(name),
+          escapeMarkdownCell(type),
+          nullable ? "YES" : "NO",
+          escapeMarkdownCell(def === null || def === undefined ? "" : String(def)),
+        ]);
+        colJson.push({ name, type, nullable, default: def === undefined ? null : def });
+      }
+
+      const meta = await connection.query(
+        "SELECT 'BASE TABLE' AS kind, estimated_size FROM duckdb_tables() " +
+          "WHERE database_name = ? AND schema_name = ? AND table_name = ? " +
+          "UNION ALL SELECT 'VIEW', NULL FROM duckdb_views() " +
+          "WHERE database_name = ? AND schema_name = ? AND view_name = ?",
+        [ref.catalog, ref.schema, ref.table, ref.catalog, ref.schema, ref.table],
+      );
+      let kind = "TABLE";
+      let estimatedRows: number | null = null;
+      if (meta.numRows > 0) {
+        kind = String(meta.getChildAt(0)?.get(0));
+        const est = meta.getChildAt(1)?.get(0);
+        if (est !== null && est !== undefined) estimatedRows = Number(est);
+      }
+      if (estimatedRows === 0) {
+        // DuckDB reports 0 for tables it has no statistics for (attached
+        // Postgres/SQLite catalogs, freshly attached files). A one-row probe
+        // is cheap and turns a misleading 0 into "unknown" when data exists.
+        // The probe can be refused (e.g. Hardcharger's system-managed
+        // instrumentation catalog is admin-only); metadata is still useful
+        // then, so a failed probe just leaves the estimate unknown.
+        try {
+          const probe = await connection.query(
+            `SELECT 1 FROM ${quoteIdent(ref.catalog)}.${quoteIdent(ref.schema)}.${quoteIdent(ref.table)} LIMIT 1`,
+          );
+          if (probe.numRows > 0) estimatedRows = null;
+        } catch {
+          estimatedRows = null;
+        }
+      }
+
+      const constraints = await connection.query(
+        "SELECT constraint_type, constraint_column_names, constraint_text FROM duckdb_constraints() " +
+          "WHERE database_name = ? AND schema_name = ? AND table_name = ? " +
+          "AND constraint_type IN ('PRIMARY KEY', 'UNIQUE', 'FOREIGN KEY', 'CHECK') " +
+          "ORDER BY constraint_index",
+        [ref.catalog, ref.schema, ref.table],
+      );
+      const constraintJson: Array<{ type: string; columns: unknown; text: string }> = [];
+      const constraintLines: string[] = [];
+      for (let i = 0; i < constraints.numRows; i++) {
+        const type = String(constraints.getChildAt(0)?.get(i));
+        const cols = cellToJson(constraints.getChildAt(1)?.get(i), constraints.schema.fields[1].type);
+        const ctext = String(constraints.getChildAt(2)?.get(i) ?? "");
+        constraintJson.push({ type, columns: cols, text: ctext });
+        constraintLines.push(`- ${type}: ${ctext || cellToText(cols)}`);
+      }
+
+      const header = `**${ref.catalog}.${ref.schema}.${ref.table}** (${kind})` +
+        (estimatedRows !== null ? ` · estimated rows: ${estimatedRows}` : "");
+      const parts = [header, "", toMarkdownTable(["column", "type", "nullable", "default"], colRows)];
+      if (constraintLines.length) parts.push("", "Constraints:", ...constraintLines);
+      return text(parts.join("\n"), {
+        connection: connection.config.name,
+        catalog: ref.catalog,
+        schema: ref.schema,
+        table: ref.table,
+        kind,
+        estimated_rows: estimatedRows,
+        columns: colJson,
+        constraints: constraintJson,
+      });
+    }),
+  );
+
+  server.registerTool(
+    "use_schema",
+    {
+      title: "Set default catalog/schema",
+      description:
+        "Sets the session's default catalog and/or schema (Warp SQL session options, like DuckDB USE) so " +
+        "unqualified table names resolve there for the rest of the session, including on a replacement " +
+        "session if the server drops this one. Does not read or modify data.",
+      inputSchema: jsonSchema2020({
+        catalog: z.string().optional().describe("Catalog (database) name."),
+        schema: z.string().optional().describe("Schema name within the catalog."),
+        connection: connectionArg,
+      }),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    tool(async ({ catalog, schema, connection: connectionName }) => {
+      if (!catalog && !schema) return errorResult("Provide a catalog and/or a schema.");
+      const connection = conn(connectionName);
+      await connection.useSchema({ catalog, schema });
+      const t = await connection.query("SELECT current_catalog() AS c, current_schema() AS s");
+      // `t` is what the server resolves now, after the session options were applied.
+      const current = { catalog: String(t.getChildAt(0)?.get(0)), schema: String(t.getChildAt(1)?.get(0)) };
+      return text(`Default set to ${current.catalog}.${current.schema} for this session.`, current);
+    }),
+  );
+
+  server.registerTool(
+    "run_query",
+    {
+      title: "Run query",
+      description:
+        "Runs a SQL query against Hardcharger (DuckDB dialect) and returns the rows as a Markdown table " +
+        `plus structured JSON. Results are capped at max_rows (default ${config.maxRows}, hard maximum ` +
+        `${config.maxRows}); long cells are truncated to ${config.maxCellChars} characters with …. ` +
+        (config.allowWrites
+          ? "Writes are enabled on this server; prefer execute_statement for DML/DDL."
+          : "This server is read-only: only SELECT/WITH/SHOW/DESCRIBE/SUMMARIZE/EXPLAIN/PRAGMA(read)/USE statements are accepted."),
+      inputSchema: jsonSchema2020({
+        sql: sqlArg,
+        params: paramsSchema.optional().describe(PARAMS_DESCRIPTION),
+        max_rows: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(`Row cap for this call (1..${config.maxRows}; default ${config.maxRows}).`),
+        connection: connectionArg,
+      }),
+      outputSchema: jsonSchema2020({
+        columns: z.array(z.object({ name: z.string(), type: z.string() })),
+        rows: z.array(z.array(z.unknown())),
+        row_count: z.number(),
+        truncated: z.boolean(),
+        elapsed_ms: z.number(),
+        connection: z.string(),
+        mcp_server_version: z.string(),
+      }),
+      annotations: { readOnlyHint: !config.allowWrites, idempotentHint: !config.allowWrites },
+    },
+    tool(async ({ sql, params, max_rows, connection: connectionName }) => {
+      const connection = conn(connectionName);
+      const guarded = guardStatement(sql, config.allowWrites);
+      const maxRows = Math.min(max_rows ?? config.maxRows, config.maxRows);
+      const bound = convertParams(params);
+      assertParameterCount(guarded.sql, bound);
+      const effectiveSql = guarded.classification.wrappable
+        ? wrapWithLimit(guarded.sql, maxRows + 1)
+        : guarded.sql;
+      const started = Date.now();
+      let capped;
+      try {
+        capped = await connection.queryCapped(effectiveSql, bound, maxRows);
+      } catch (err) {
+        // Only errors that cite a position need the wrapper explained.
+        const described = describeError(err, redact);
+        if (guarded.classification.wrappable && !(err instanceof QueryTimeoutError) && /\bLINE \d+\b/u.test(described)) {
+          throw new Error(
+            `${described}\n(Note: to enforce max_rows the query was executed as ` +
+              `SELECT * FROM (<your query>) AS ${WRAPPER_ALIAS} LIMIT ${maxRows + 1}, so line numbers in the ` +
+              "server's message are offset by one.)",
+            { cause: err },
+          );
+        }
+        throw err;
+      }
+      const elapsedMs = Date.now() - started;
+      // A USE changes the session's catalog/schema on the server; pin it as session options
+      // so the client replays it on a replacement session, as it does for use_schema.
+      if (guarded.classification.keyword === "USE") await connection.syncSearchPath();
+      const formatted = formatTable(capped.table, { maxRows, maxCellChars: config.maxCellChars });
+      const truncated = formatted.truncated || capped.truncated;
+      const footer = resultFooter({
+        rowCount: formatted.rowCount,
+        truncated,
+        maxRows,
+        elapsedMs,
+      });
+      const body = formatted.rowCount > 0 ? `${formatted.markdown}\n\n${footer}` : `(no rows)\n\n${footer}`;
+      return text(body, {
+        columns: formatted.columns,
+        rows: formatted.rows,
+        row_count: formatted.rowCount,
+        truncated,
+        elapsed_ms: elapsedMs,
+        connection: connection.config.name,
+      });
+    }),
+  );
+
+  server.registerTool(
+    "explain_query",
+    {
+      title: "Explain query",
+      description:
+        "Returns DuckDB's EXPLAIN output for a SQL statement without executing it: the physical plan " +
+        "as Markdown plus structured JSON (physical_plan, sections).",
+      inputSchema: jsonSchema2020({ sql: sqlArg, connection: connectionArg }),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    tool(async ({ sql, connection: connectionName }) => {
+      const connection = conn(connectionName);
+      const guarded = guardStatement(sql, config.allowWrites);
+      const normalized = normalizeStatement(guarded.sql);
+      const explainSql = /^\s*EXPLAIN\b/iu.test(normalized) ? normalized : `EXPLAIN ${normalized}`;
+      const table = await connection.query(explainSql);
+      const sections: Array<{ key: string; plan: string }> = [];
+      const keyCol = table.schema.fields.findIndex((f) => f.name === "explain_key");
+      const valCol = table.schema.fields.findIndex((f) => f.name === "explain_value");
+      for (let i = 0; i < table.numRows; i++) {
+        const key = keyCol >= 0 ? String(table.getChildAt(keyCol)?.get(i)) : `row ${i + 1}`;
+        const value = valCol >= 0
+          ? String(table.getChildAt(valCol)?.get(i) ?? "")
+          : table.schema.fields.map((_, c) => String(table.getChildAt(c)?.get(i))).join(" ");
+        sections.push({ key, plan: value.replace(/\s+$/u, "") });
+      }
+      const body = sections.map((s) => `### ${s.key}\n\`\`\`\n${s.plan}\n\`\`\``).join("\n\n");
+      // DuckDB returns one physical_plan row; other EXPLAIN variants may add more sections.
+      const physical = sections.find((s) => s.key === "physical_plan") ?? sections[0];
+      return text(body || "(no plan returned)", {
+        connection: connection.config.name,
+        physical_plan: physical?.plan ?? null,
+        sections,
+      });
+    }),
+  );
+
+  if (config.allowWrites) {
+    server.registerTool(
+      "execute_statement",
+      {
+        title: "Execute statement",
+        description:
+          "Executes a DML/DDL statement (INSERT/UPDATE/DELETE/CREATE/...) with optional bound parameters " +
+          "and returns the affected-row count (-1 when the server does not report one).",
+        inputSchema: jsonSchema2020({
+          sql: sqlArg,
+          params: paramsSchema.optional().describe(PARAMS_DESCRIPTION),
+          connection: connectionArg,
+        }),
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+      },
+      tool(async ({ sql, params, connection: connectionName }) => {
+        const connection = conn(connectionName);
+        const guarded = guardStatement(sql, true);
+        const bound = convertParams(params);
+        assertParameterCount(guarded.sql, bound);
+        const started = Date.now();
+        const affected = await connection.update(guarded.sql, bound);
+        const elapsedMs = Date.now() - started;
+        const count = affected < 0 ? "unknown" : String(affected);
+        return text(`Statement executed. Affected rows: ${count} · ${elapsedMs} ms`, {
+          affected_rows: affected,
+          elapsed_ms: elapsedMs,
+          connection: connection.config.name,
+        });
+      }),
+    );
+  }
+
+  server.registerTool(
+    "server_info",
+    {
+      title: "Server info",
+      description:
+        "Reports the Hardcharger and DuckDB versions of a connection, its connection URI (credentials " +
+        "redacted), the effective limits, every configured connection, and this MCP server's version.",
+      inputSchema: jsonSchema2020({ connection: connectionArg }),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    tool(async ({ connection: connectionName }) => {
+      const connection = conn(connectionName);
+      const cfg = connection.config;
+      let hardchargerVersion = "unknown";
+      let duckdbVersion = "unknown";
+      let user = "unknown";
+      let role = "unknown";
+      let currentCatalog = "unknown";
+      let currentSchema = "unknown";
+      try {
+        const t = await connection.query(
+          "SELECT HARDCHARGER_VERSION() AS hv, version() AS dv, HARDCHARGER_USER() AS u, HARDCHARGER_ROLE() AS r, " +
+            "current_catalog() AS c, current_schema() AS s",
+        );
+        hardchargerVersion = String(t.getChildAt(0)?.get(0));
+        duckdbVersion = String(t.getChildAt(1)?.get(0));
+        user = String(t.getChildAt(2)?.get(0));
+        role = String(t.getChildAt(3)?.get(0));
+        currentCatalog = String(t.getChildAt(4)?.get(0));
+        currentSchema = String(t.getChildAt(5)?.get(0));
+      } catch {
+        // A Warp SQL server other than Hardcharger: its server-info document names it.
+        try {
+          const info = await connection.run((c) => c.metadata.serverInfo());
+          hardchargerVersion = `${String(info.server_name ?? "unknown server")} ${String(info.server_version ?? "")}`.trim();
+          duckdbVersion = String(info.engine_version ?? "unknown");
+        } catch {
+          // leave unknowns
+        }
+      }
+      const auth = connection.effectiveAuth();
+      const discovery = connection.discovery();
+      const settings = connection.serverSettingsSnapshot();
+      const info = {
+        connection: cfg.name,
+        current_connection: registry.current(),
+        hardcharger_version: hardchargerVersion,
+        duckdb_version: duckdbVersion,
+        connection_uri: cfg.uri,
+        auth_method: auth.method,
+        user,
+        role,
+        tls: cfg.tls,
+        tls_skip_verify: cfg.tlsSkipVerify,
+        current_catalog: currentCatalog,
+        current_schema: currentSchema,
+        allow_writes: config.allowWrites,
+        max_rows: config.maxRows,
+        max_cell_chars: config.maxCellChars,
+        query_timeout_seconds: config.queryTimeoutSeconds,
+        default_catalog: connection.currentSearchPath().catalog ?? null,
+        default_schema: connection.currentSearchPath().schema ?? null,
+        transport: ctx.transport,
+        authenticated_user: ctx.user ? ctx.user.name : null,
+        session_scope: ctx.transport === "stdio" ? "process" : ctx.session ? "per-user" : "shared",
+        session_started: ctx.session ? ctx.session.createdAt.toISOString() : null,
+        session_idle_timeout_seconds: ctx.session ? config.mcpSessionIdleSeconds : null,
+        // Hardcharger's own idle timeout for the session; the client replaces a session the
+        // server dropped and replays its catalog and schema.
+        hardcharger_session_idle_timeout_seconds: await connection.sessionIdleTimeoutSeconds(),
+        session_replacements: connection.sessionReplacements(),
+        reconnects: connection.reconnects,
+        protocol: discovery ? `${discovery.protocol} ${(discovery.protocol_versions ?? []).join(",")}`.trim() : null,
+        capabilities: discovery?.capabilities ?? [],
+        hardcharger_settings: settings,
+        mcp_server: `${PACKAGE_NAME} ${PACKAGE_VERSION}`,
+        session_warnings: connection.sessionWarnings(),
+        connections: registry.summaries(),
+      };
+      const lines = Object.entries(info)
+        .filter(([k]) => k !== "connections" && k !== "hardcharger_settings")
+        .map(([k, v]) => `- ${k}: ${Array.isArray(v) ? (v.length ? v.join("; ") : "none") : v === null ? "(not set)" : String(v)}`);
+      const shown = Object.entries(settings);
+      lines.push(
+        shown.length
+          ? `- hardcharger_settings: ${shown.map(([k, v]) => `${k.replace(/^hardcharger\./u, "")}=${v === "" ? '""' : v}`).join(", ")}`
+          : "- hardcharger_settings: (not reported by this server)",
+      );
+      if (info.connections.length > 1) {
+        lines.push(
+          "- connections: " +
+            info.connections.map((c) => `${c.name} (${c.uri})${c.current ? " [current]" : ""}`).join("; "),
+        );
+      }
+      return text(lines.join("\n"), info);
+    }),
+  );
+
+  // login_sso opens a browser on the machine running the server, which only
+  // makes sense for the local stdio transport.
+  if (config.enableSso && ctx.transport === "stdio") {
+    server.registerTool(
+      "login_sso",
+      {
+        title: "Sign in with SSO",
+        description:
+          "Signs in to Hardcharger with the server's OAuth/SSO identity provider: opens the provider's " +
+          "login page in your browser, waits for you to finish, then reconnects with the identity " +
+          "token (kept in memory only). If the wait times out, call login_sso again to keep waiting.",
+        inputSchema: jsonSchema2020({
+          wait_seconds: z
+            .number()
+            .int()
+            .min(5)
+            .max(600)
+            .optional()
+            .describe("How long to wait for the browser login before returning (default 90)."),
+          connection: connectionArg,
+        }),
+        annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      tool(async ({ wait_seconds, connection: connectionName }) => {
+        const outcome = await runSsoLogin(conn(connectionName), { waitSeconds: wait_seconds ?? 90 });
+        return text(outcome.message, { status: outcome.status, auth_url: outcome.authUrl ?? null });
+      }),
+    );
+  }
+
+  const multi = registry.names().length > 1;
+  server.registerResource(
+    "table_schema",
+    new ResourceTemplate("hardcharger://{connection}/schema/{catalog}/{schema}/{table}", {
+      list: async () => {
+        const resources: Array<{ uri: string; name: string; title: string; description: string; mimeType: string }> = [];
+        for (const connection of registry.all()) {
+          if (resources.length >= 500) break;
+          let tables;
+          try {
+            tables = await connection.run((c) => listTables(c));
+          } catch {
+            continue; // an unreachable server must not hide the others
+          }
+          for (const t of tables) {
+            if (resources.length >= 500) break;
+            const qualified = `${t.catalog}.${t.schema}.${t.tableName}`;
+            const label = multi ? `${connection.config.name}: ${qualified}` : qualified;
+            resources.push({
+              uri: `hardcharger://${encodeURIComponent(connection.config.name)}/schema/${encodeURIComponent(t.catalog)}/${encodeURIComponent(t.schema)}/${encodeURIComponent(t.tableName)}`,
+              name: label,
+              // Clients (e.g. Claude Desktop's resource picker) display `title`.
+              title: label,
+              description: `DDL of ${t.tableType.toLowerCase()} ${qualified} on connection ${connection.config.name}`,
+              mimeType: "text/plain",
+            });
+          }
+        }
+        return { resources };
+      },
+    }),
+    {
+      title: "Table DDL",
+      description:
+        "CREATE statement (DDL) for a table or view: hardcharger://{connection}/schema/{catalog}/{schema}/{table}",
+      mimeType: "text/plain",
+    },
+    async (uri, variables): Promise<ReadResourceResult> => {
+      const pick = (v: string | string[] | undefined) => decodeURIComponent(Array.isArray(v) ? v[0] : (v ?? ""));
+      const ref: TableRef = {
+        catalog: pick(variables.catalog),
+        schema: pick(variables.schema),
+        table: pick(variables.table),
+      };
+      try {
+        const connection = registry.get(pick(variables.connection));
+        const ddl = await fetchDdl(connection, ref);
+        const body = ddl ?? `-- ${ref.catalog}.${ref.schema}.${ref.table} not found`;
+        return { contents: [{ uri: uri.href, mimeType: "text/plain", text: truncateText(body, 100000) }] };
+      } catch (err) {
+        return {
+          contents: [{ uri: uri.href, mimeType: "text/plain", text: `-- error: ${describeError(err, redact)}` }],
+        };
+      }
+    },
+  );
+
+  return server;
+}

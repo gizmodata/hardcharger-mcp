@@ -1,0 +1,300 @@
+name: ci
+
+# Every check, on every push and pull request; also the release gate (release.yml calls it on
+# the tagged commit):
+#   - lint (eslint, the lock's shape), a real typecheck (src and tests), unit tests on Node 22,
+#     24 and 26 and on the dependency floors;
+#   - the live suites (Node 22 and 24) and the README's examples, against hardcharger-server from
+#     Hardcharger's main branch;
+#   - the Claude Desktop extension bundle, the container image and the Helm chart.
+#
+# Access, with no personal token:
+#   - gizmodata/warp-sql-js and gizmodata/hardcharger-js (internal; the clients are not on npm
+#     yet) through the DEPLOY_KEY_WARP_SQL_JS and DEPLOY_KEY_HARDCHARGER_JS secrets, read-only
+#     deploy keys of those repositories: the clients job builds the commits pinned in
+#     scripts/*.commit and hands the tarballs to the other jobs;
+#   - hardcharger-server from the private image ghcr.io/gizmodata/hardcharger, pulled with this
+#     workflow's GITHUB_TOKEN: the package must grant this repository read access (package
+#     settings, Manage Actions access).
+# Without either, the job that needs it fails, and every job after it: nothing is skipped.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A newer run on the same branch makes an older one pointless: cancel it. Never on a tag: a
+# release run must finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # The server the live suites run against: Hardcharger's main branch, which its CI publishes on
+  # every green push. Pin a :sha-<short> tag to reproduce an old run.
+  HARDCHARGER_IMAGE: ghcr.io/gizmodata/hardcharger:main
+
+jobs:
+  clients:
+    name: "@gizmodata/hardcharger + @gizmodata/warp-sql (pinned commits)"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Deploy keys for gizmodata/warp-sql-js and gizmodata/hardcharger-js
+        env:
+          DEPLOY_KEY_WARP_SQL_JS: ${{ secrets.DEPLOY_KEY_WARP_SQL_JS }}
+          DEPLOY_KEY_HARDCHARGER_JS: ${{ secrets.DEPLOY_KEY_HARDCHARGER_JS }}
+        run: |
+          # One SSH host alias per repository, each with its own key, and git rewrites the
+          # repository's URL to its alias.
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          for repo in warp-sql-js hardcharger-js; do
+            var="DEPLOY_KEY_$(echo "$repo" | tr 'a-z-' 'A-Z_')"
+            key="${!var}"
+            if [ -z "$key" ]; then
+              echo "::error::the $var secret is not set: the private key of a read-only deploy key of gizmodata/$repo"
+              exit 1
+            fi
+            printf '%s\n' "$key" > ~/.ssh/"$repo" && chmod 600 ~/.ssh/"$repo"
+            printf 'Host github.com-%s\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/%s\n  IdentitiesOnly yes\n' "$repo" "$repo" >> ~/.ssh/config
+            git config --global url."git@github.com-$repo:gizmodata/$repo.git".insteadOf "git@github.com:gizmodata/$repo.git"
+          done
+      - name: Build and pack the pinned commits
+        run: scripts/install-clients.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: client-tarballs
+          path: .clients/*.tgz
+          include-hidden-files: true # .clients/ is a dot-directory, which upload-artifact leaves out by default
+          if-no-files-found: error
+          retention-days: 7
+
+  checks:
+    name: lint, typecheck, unit tests
+    needs: clients
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-tarballs
+          path: .clients
+      - run: npm ci
+      - name: Lint (eslint, the lock's shape)
+        run: npm run lint:ci
+      - name: Typecheck (src and tests)
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+
+  node:
+    name: unit tests (Node ${{ matrix.node }})
+    needs: clients
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-tarballs
+          path: .clients
+      - run: npm ci
+      - run: npm test
+
+  lowest:
+    name: unit tests on the dependency floors (Node 22.19)
+    needs: clients
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.19.0
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-tarballs
+          path: .clients
+      - run: npm ci
+      # The floors of package.json's ranges, read from it, so they stay honest as they rise.
+      - name: Install exactly the floors
+        run: |
+          floors=$(node -p 'Object.entries(require("./package.json").dependencies).filter(([n]) => !n.startsWith("@gizmodata/")).map(([n, r]) => n + "@" + r.replace(/^[\^~]/, "")).join(" ")')
+          [ -n "$floors" ] || { echo "::error::no dependency floors read from package.json"; exit 1; }
+          echo "floors: $floors"
+          npm install --no-save $floors
+          for spec in $floors; do
+            name="${spec%@*}" want="${spec##*@}"
+            [ "$(node -p "require('./node_modules/$name/package.json').version")" = "$want" ] || { echo "::error::$name is not $want"; exit 1; }
+          done
+      - run: npm test
+
+  server:
+    name: hardcharger-server (main)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Pull the image and take the server out
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin > /dev/null
+          if ! docker pull -q "$HARDCHARGER_IMAGE"; then
+            echo "::error::can't pull $HARDCHARGER_IMAGE with this workflow's GITHUB_TOKEN: grant $GITHUB_REPOSITORY read access to the hardcharger package (package settings, Manage Actions access)"
+            exit 1
+          fi
+          id=$(docker create "$HARDCHARGER_IMAGE")
+          docker cp "$id:/opt/hardcharger" hardcharger
+          docker rm "$id" > /dev/null
+          docker logout ghcr.io > /dev/null
+          hardcharger/bin/hardcharger-server --version
+          tar -czf hardcharger.tar.gz hardcharger
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hardcharger-linux-amd64
+          path: hardcharger.tar.gz
+          retention-days: 3
+
+  live:
+    name: live tests (Node ${{ matrix.node }}, Hardcharger)
+    needs: [clients, server]
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-tarballs
+          path: .clients
+      - uses: actions/download-artifact@v8
+        with:
+          name: hardcharger-linux-amd64
+      - name: Unpack the server
+        run: |
+          tar -C "$RUNNER_TEMP" -xzf hardcharger.tar.gz
+          echo "HARDCHARGER_MCP_TEST_SERVER_BINARY=$RUNNER_TEMP/hardcharger/bin/hardcharger-server" >> "$GITHUB_ENV"
+      - run: npm ci
+      # Fails without the server, on any skipped test, and when no test passed.
+      - name: Live tests
+        run: npm run test:live
+
+  examples:
+    name: README examples (Hardcharger on 31337)
+    needs: [clients, server]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-tarballs
+          path: .clients
+      - uses: actions/download-artifact@v8
+        with:
+          name: hardcharger-linux-amd64
+      - name: Unpack the server
+        run: |
+          tar -C "$RUNNER_TEMP" -xzf hardcharger.tar.gz
+          echo "HARDCHARGER_MCP_TEST_SERVER_BINARY=$RUNNER_TEMP/hardcharger/bin/hardcharger-server" >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: The README's examples, installed from the packed tarball as a user would
+        run: npm run test:examples
+
+  bundle:
+    name: Claude Desktop extension (.mcpb)
+    needs: clients
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-tarballs
+          path: .clients
+      - run: npm ci
+      - run: npm run build:mcpb
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hardcharger-mcp-bundle
+          path: |
+            build/*.mcpb
+            build/*.mcpb.sha256
+          if-no-files-found: error
+
+  image:
+    name: Container image (build only)
+    needs: clients
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-tarballs
+          path: .clients
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: hardcharger-mcp:ci
+      - name: Smoke test the image
+        run: |
+          docker run --rm hardcharger-mcp:ci --help
+          [ "$(docker run --rm --entrypoint node hardcharger-mcp:ci dist/cli.js --version)" = "$(node -p 'require("./package.json").version')" ]
+
+  chart:
+    name: Helm chart and version agreement
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+      - run: helm lint charts/hardcharger-mcp
+      - name: Render with OAuth and ingress enabled
+        run: |
+          helm template ci charts/hardcharger-mcp \
+            --set config.HARDCHARGER_URI=hardcharger://db.example.com \
+            --set config.HARDCHARGER_MCP_PUBLIC_URL=https://mcp.example.com/mcp \
+            --set config.HARDCHARGER_MCP_OAUTH_ISSUER=https://login.microsoftonline.com/tenant/v2.0 \
+            --set config.HARDCHARGER_MCP_OAUTH_AUDIENCE=client-id \
+            --set existingSecret=creds \
+            --set ingress.enabled=true --set ingress.host=mcp.example.com > /dev/null
+      - name: package.json, manifest.json and the chart name one version
+        run: |
+          PKG="$(node -p "require('./package.json').version")"
+          MANIFEST="$(node -p "require('./manifest.json').version")"
+          CHART="$(sed -n 's/^version: *//p' charts/hardcharger-mcp/Chart.yaml)"
+          APP="$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' charts/hardcharger-mcp/Chart.yaml)"
+          [ -n "$PKG" ] || { echo "::error::no version in package.json"; exit 1; }
+          for v in "$MANIFEST" "$CHART" "$APP"; do
+            [ "$v" = "$PKG" ] || { echo "::error::manifest $MANIFEST / chart $CHART / appVersion $APP do not all match package.json $PKG"; exit 1; }
+          done
