@@ -277,6 +277,7 @@ jobs:
       - name: Smoke test the image
         run: |
           docker run --rm hardcharger-mcp:ci --help
+          docker run --rm --entrypoint test hardcharger-mcp:ci -s /usr/share/doc/hardcharger-mcp/THIRD_PARTY_NOTICES.txt
           [ "$(docker run --rm --entrypoint node hardcharger-mcp:ci dist/cli.js --version)" = "$(node -p 'require("./package.json").version')" ]
 
   chart:

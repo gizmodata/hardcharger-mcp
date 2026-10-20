@@ -28,9 +28,14 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY package.json package-lock.json LICENSE README.md CHANGELOG.md ./
+COPY package.json package-lock.json LICENSE NOTICE README.md CHANGELOG.md ./
 COPY .clients ./.clients
-RUN npm ci --omit=dev --ignore-scripts && rm -rf .clients && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts \
+  && mkdir -p /usr/share/doc/hardcharger-mcp \
+  && npx --yes license-checker-rseidelsohn@5.0.1 --production --plainVertical \
+       > /usr/share/doc/hardcharger-mcp/THIRD_PARTY_NOTICES.txt \
+  && test -s /usr/share/doc/hardcharger-mcp/THIRD_PARTY_NOTICES.txt \
+  && rm -rf .clients && npm cache clean --force
 COPY --from=build /app/dist ./dist
 USER node
 EXPOSE 3000

@@ -34,7 +34,7 @@ rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/server"
 cp -R dist/. "$BUNDLE/server/"
 find "$BUNDLE/server" -name '*.map' -delete
-cp LICENSE README.md CHANGELOG.md icon.png manifest.json "$BUNDLE/"
+cp LICENSE NOTICE README.md CHANGELOG.md icon.png manifest.json "$BUNDLE/"
 
 # package.json without scripts or bin (nothing runs at install time inside the bundle)
 node -e '
@@ -50,6 +50,9 @@ cp .clients/gizmodata-*.tgz "$BUNDLE/.clients/"
 
 echo "==> Installing production dependencies (scripts disabled)"
 (cd "$BUNDLE" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund --loglevel=error)
+# Collect the license texts of exactly the production dependencies shipped below.
+(cd "$BUNDLE" && npx --yes license-checker-rseidelsohn@5.0.1 --production --plainVertical > THIRD_PARTY_NOTICES.txt)
+test -s "$BUNDLE/THIRD_PARTY_NOTICES.txt"
 rm -rf "$BUNDLE/package-lock.json" "$BUNDLE/.clients"
 
 # Nothing native may ship: the bundle is one file for every platform.

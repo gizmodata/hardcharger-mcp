@@ -38,6 +38,8 @@ Fixed entries describe what moved since 0.1.0, for anyone who installed it from 
   reason, is returned. `killed`, `token_expired`, no reason or an unknown reason still reopen once.
 
 ### Added
+- Production dependency license texts travel with the desktop extension as
+  `THIRD_PARTY_NOTICES.txt` and with the image under `/usr/share/doc/hardcharger-mcp/`.
 - Tests: reopening after `client_transport_error`; no reopen after a session ended for a revoked
   token; `isConnectionLost` for every `session_ended` reason and for the old unprefixed codes.
 - Tests for `login_sso` on browser sign-in: unit tests for each poll answer (pending at the
