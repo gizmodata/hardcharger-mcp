@@ -11,9 +11,9 @@
 # development and CI stand-in, never part of what ships. Run this before `npm ci`.
 #
 #   HARDCHARGER_MCP_WARP_SQL_JS_REPO     where to clone warp-sql-js from
-#                                        (default git@github.com:gizmodata/warp-sql-js.git)
+#                                        (default https://github.com/gizmodata/warp-sql-js.git)
 #   HARDCHARGER_MCP_HARDCHARGER_JS_REPO  where to clone hardcharger-js from
-#                                        (default git@github.com:gizmodata/hardcharger-js.git)
+#                                        (default https://github.com/gizmodata/hardcharger-js.git)
 # A local checkout works for either.
 set -euo pipefail
 
@@ -29,8 +29,8 @@ pin() {
 }
 warp_commit=$(pin warp-sql-js)
 hc_commit=$(pin hardcharger-js)
-warp_repo="${HARDCHARGER_MCP_WARP_SQL_JS_REPO:-git@github.com:gizmodata/warp-sql-js.git}"
-hc_repo="${HARDCHARGER_MCP_HARDCHARGER_JS_REPO:-git@github.com:gizmodata/hardcharger-js.git}"
+warp_repo="${HARDCHARGER_MCP_WARP_SQL_JS_REPO:-https://github.com/gizmodata/warp-sql-js.git}"
+hc_repo="${HARDCHARGER_MCP_HARDCHARGER_JS_REPO:-https://github.com/gizmodata/hardcharger-js.git}"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

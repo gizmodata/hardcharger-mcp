@@ -71,6 +71,11 @@ jobs:
             git config --global url."git@github.com-$repo:gizmodata/$repo.git".insteadOf "git@github.com:gizmodata/$repo.git"
           done
       - name: Build and pack the pinned commits
+        env:
+          # The script's defaults are the public https URLs; while the repositories are private,
+          # CI clones over SSH (the aliases above rewrite these). All of it goes at the public flip.
+          HARDCHARGER_MCP_WARP_SQL_JS_REPO: git@github.com:gizmodata/warp-sql-js.git
+          HARDCHARGER_MCP_HARDCHARGER_JS_REPO: git@github.com:gizmodata/hardcharger-js.git
         run: scripts/install-clients.sh
       - uses: actions/upload-artifact@v7
         with:
