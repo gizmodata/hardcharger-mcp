@@ -38,8 +38,8 @@ runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: 2.0.0, with Hardcharger 2.0.0.** Built on `@gizmodata/hardcharger` 2.0.2 (hardcharger-js
-> `d7cc8d1`, on `@gizmodata/chargewire` 1.0.0, chargewire-js `1227155`, Chargewire protocol 1.0.0);
+> **Status: 2.1.0, with Hardcharger 2.3.0.** Built on `@gizmodata/hardcharger` 2.1.0 (hardcharger-js
+> `b3622f5`, on `@gizmodata/chargewire` 2.0.0, chargewire-js `1ea10dd`, Chargewire protocol 1.0.0);
 > tested against the image of Hardcharger's main branch and against Hardcharger 2.2.0, released
 > before the protocol was renamed to Chargewire.
 
@@ -404,7 +404,7 @@ built from [gizmodata/hardcharger-js](https://github.com/gizmodata/hardcharger-j
 [scripts/hardcharger-js.commit](scripts/hardcharger-js.commit) and
 [scripts/chargewire-js.commit](scripts/chargewire-js.commit), and packed to `.clients/`, where
 `package-lock.json` finds them, so the tests run against those exact clients. `package.json`, and
-so the published package, names the npm package and its range (`^2.0.0`); the tarballs are a
+so the published package, names the npm package and its range (`^2.1.0`); the tarballs are a
 stand-in for development and CI only (`scripts/check-lock.mjs` checks both).
 
 ```bash

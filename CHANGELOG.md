@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-29
+
 ### Changed
-- Built on the Chargewire protocol and clients: `@gizmodata/hardcharger` from hardcharger-js
-  `d7cc8d1`, on `@gizmodata/chargewire` 1.0.0 (chargewire-js `1227155`). `server_info` reports
+- Built on the Chargewire protocol and clients: `@gizmodata/hardcharger` 2.1.0, on
+  `@gizmodata/chargewire` 2.0.0. `server_info` reports
   the protocol as `chargewire 1`. Tool names, settings and connection URIs are unchanged.
 - Still works with Hardcharger servers released before the rename (2.2.0 and earlier): the
   client falls back to them on its own, and `HARDCHARGER_URI` values written for earlier
