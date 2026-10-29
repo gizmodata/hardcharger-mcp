@@ -430,13 +430,13 @@ export interface CappedResult {
   truncated: boolean;
 }
 
-/** The error's Hardcharger (Warp SQL) code, if it is one of the client's errors. */
+/** The error's Hardcharger (Chargewire) code, if it is one of the client's errors. */
 export function errorCode(err: unknown): string | undefined {
   return err instanceof HardchargerError ? err.code : undefined;
 }
 
 /**
- * `session_ended` reasons after which the user's sign-in itself no longer holds (Warp SQL
+ * `session_ended` reasons after which the user's sign-in itself no longer holds (Chargewire
  * §4.2, §5.6): a revoked token, changed credentials, a dropped user. Nothing signs in again
  * on its own after these; the error is the answer.
  */
@@ -525,7 +525,7 @@ function readPem(what: string, file: string): string {
 /**
  * One Hardcharger connection per configured server, opened lazily and serialized so a
  * single statement is in flight at a time. Timeouts are enforced by the server
- * (`statementTimeoutMs`, Warp SQL §6.9) with a client-side abort as backstop that cancels
+ * (`statementTimeoutMs`, Chargewire §6.9) with a client-side abort as backstop that cancels
  * the statement on the server; only if that fails to settle the call is the connection
  * dropped and reopened. The client replaces a session the server lost and replays its
  * catalog and schema; a connection that is gone altogether (a killed session, a closed
@@ -563,7 +563,7 @@ export class HardchargerConnection {
   }
 
   /**
-   * Switches the session's default catalog and/or schema (Warp SQL session options, which
+   * Switches the session's default catalog and/or schema (Chargewire session options, which
    * the client replays on a replacement session). Throws when the server refuses it.
    */
   async useSchema(path: SearchPath): Promise<SearchPath> {
@@ -717,7 +717,7 @@ export class HardchargerConnection {
   }
 
   /**
-   * The search path, as Warp SQL session options. A catalog or schema the server does not
+   * The search path, as Chargewire session options. A catalog or schema the server does not
    * have is reported (with the catalogs it does have) instead of failing the connection;
    * the server's default then applies.
    */

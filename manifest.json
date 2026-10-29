@@ -4,7 +4,7 @@
   "display_name": "Hardcharger",
   "version": "2.0.0",
   "description": "Query your Hardcharger™ (GizmoData™'s DuckDB 2.0 server) from Claude.",
-  "long_description": "Connects Claude Desktop to a Hardcharger server over Warp SQL (HTTPS) with the Hardcharger JavaScript client: pure JavaScript, no native driver, the same bundle on macOS, Windows and Linux.\n\nTools: list catalogs, schemas and tables; describe a table (columns, types, constraints, estimated rows); run parameterised SQL queries with row caps and server-side timeouts; explain a query; server info. Writes are disabled unless you enable them. A `hardcharger://{connection}/schema/{catalog}/{schema}/{table}` resource returns table DDL.\n\nSign in with a password, a signed sign-in token, a client certificate (mutual TLS), or your identity provider in the browser (login_sso). Up to three Hardcharger servers can be configured; every tool takes an optional connection argument and use_connection switches the default.\n\nThe server runs on your machine and connects directly to the Hardcharger host you configure (VPN / private networks work). Credentials are stored in your OS keychain by Claude Desktop and never appear in tool output or errors.",
+  "long_description": "Connects Claude Desktop to a Hardcharger server over Chargewire (HTTPS) with the Hardcharger JavaScript client: pure JavaScript, no native driver, the same bundle on macOS, Windows and Linux.\n\nTools: list catalogs, schemas and tables; describe a table (columns, types, constraints, estimated rows); run parameterised SQL queries with row caps and server-side timeouts; explain a query; server info. Writes are disabled unless you enable them. A `hardcharger://{connection}/schema/{catalog}/{schema}/{table}` resource returns table DDL.\n\nSign in with a password, a signed sign-in token, a client certificate (mutual TLS), or your identity provider in the browser (login_sso). Up to three Hardcharger servers can be configured; every tool takes an optional connection argument and use_connection switches the default.\n\nThe server runs on your machine and connects directly to the Hardcharger host you configure (VPN / private networks work). Credentials are stored in your OS keychain by Claude Desktop and never appear in tool output or errors.",
   "author": {
     "name": "GizmoData LLC",
     "email": "info@gizmodata.com",
@@ -116,7 +116,7 @@
   "keywords": [
     "hardcharger",
     "gizmodata",
-    "warp-sql",
+    "chargewire",
     "sql",
     "duckdb",
     "arrow",

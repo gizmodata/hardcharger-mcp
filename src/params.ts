@@ -1,7 +1,7 @@
 // Conversion of JSON tool arguments into the values the Hardcharger client binds to
 // `?` / `$1` placeholders.
 //
-// Plain JSON values travel as Warp SQL JSON parameters (§6.1): string, number, boolean
+// Plain JSON values travel as Chargewire JSON parameters (§6.1): string, number, boolean
 // and null as they are. The server types each one from where it is used, so a date
 // string compared with a DATE column, or inserted into a TIMESTAMP one, is read as a
 // date. A typed object form `{ "type": "...", "value": ... }` covers what that cannot

@@ -2,14 +2,14 @@
 // (scripts/install-clients.sh):
 //
 //   - package.json names @gizmodata/hardcharger with a semver range (that is what ships),
-//     never a tarball, a path or a git URL, and does not name @gizmodata/warp-sql (it comes
+//     never a tarball, a path or a git URL, and does not name @gizmodata/chargewire (it comes
 //     with @gizmodata/hardcharger);
 //   - package-lock.json resolves both to .clients/gizmodata-<name>-<version>.tgz, with no
 //     integrity hash (the tarballs are rebuilt from the pinned commits on each machine, so
 //     their bytes may differ), and the root lists the same range as package.json.
 //
 // `--fix` repairs both after `npm install ./.clients/*.tgz` (how the lock is made again after
-// a repin): it puts the range ^<version> back and drops warp-sql from the root.
+// a repin): it puts the range ^<version> back and drops chargewire from the root.
 import { readFileSync, writeFileSync } from "node:fs";
 
 const fix = process.argv.includes("--fix");
@@ -19,7 +19,7 @@ const problems = [];
 const range = /^[\^~]?\d+\.\d+\.\d+$/u;
 const root = lock.packages?.[""];
 
-for (const name of ["@gizmodata/hardcharger", "@gizmodata/warp-sql"]) {
+for (const name of ["@gizmodata/hardcharger", "@gizmodata/chargewire"]) {
   const entry = lock.packages?.[`node_modules/${name}`];
   if (entry === undefined) {
     console.error(`package-lock.json has no ${name}: run scripts/install-clients.sh, then npm install the tarballs`);
@@ -57,4 +57,4 @@ if (problems.length > 0) {
   for (const p of problems) console.error(p);
   process.exit(1);
 }
-console.log("@gizmodata/hardcharger and @gizmodata/warp-sql: package-lock.json resolves them to .clients/ tarballs");
+console.log("@gizmodata/hardcharger and @gizmodata/chargewire: package-lock.json resolves them to .clients/ tarballs");

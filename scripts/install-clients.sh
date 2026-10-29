@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Builds the Hardcharger JavaScript client and the Warp SQL client it sits on, at the commits
-# pinned in scripts/hardcharger-js.commit and scripts/warp-sql-js.commit, and packs them to
+# Builds the Hardcharger JavaScript client and the Chargewire client it sits on, at the commits
+# pinned in scripts/hardcharger-js.commit and scripts/chargewire-js.commit, and packs them to
 #
-#   .clients/gizmodata-warp-sql-<version>.tgz      (gizmodata/warp-sql-js)
+#   .clients/gizmodata-chargewire-<version>.tgz    (gizmodata/chargewire-js)
 #   .clients/gizmodata-hardcharger-<version>.tgz   (gizmodata/hardcharger-js)
 #
 # Neither package is on npm yet. Until they are, package-lock.json resolves both to these
@@ -10,8 +10,8 @@
 # keeps naming the npm package @gizmodata/hardcharger and its semver range: the tarballs are a
 # development and CI stand-in, never part of what ships. Run this before `npm ci`.
 #
-#   HARDCHARGER_MCP_WARP_SQL_JS_REPO     where to clone warp-sql-js from
-#                                        (default https://github.com/gizmodata/warp-sql-js.git)
+#   HARDCHARGER_MCP_CHARGEWIRE_JS_REPO   where to clone chargewire-js from
+#                                        (default https://github.com/gizmodata/chargewire-js.git)
 #   HARDCHARGER_MCP_HARDCHARGER_JS_REPO  where to clone hardcharger-js from
 #                                        (default https://github.com/gizmodata/hardcharger-js.git)
 # A local checkout works for either.
@@ -27,9 +27,9 @@ pin() {
   fi
   printf '%s' "$sha"
 }
-warp_commit=$(pin warp-sql-js)
+chargewire_commit=$(pin chargewire-js)
 hc_commit=$(pin hardcharger-js)
-warp_repo="${HARDCHARGER_MCP_WARP_SQL_JS_REPO:-https://github.com/gizmodata/warp-sql-js.git}"
+chargewire_repo="${HARDCHARGER_MCP_CHARGEWIRE_JS_REPO:-https://github.com/gizmodata/chargewire-js.git}"
 hc_repo="${HARDCHARGER_MCP_HARDCHARGER_JS_REPO:-https://github.com/gizmodata/hardcharger-js.git}"
 
 work=$(mktemp -d)
@@ -48,25 +48,25 @@ build() { # dir name
   )
 }
 
-checkout "$warp_repo" "$warp_commit" "$work/warp-sql-js"
+checkout "$chargewire_repo" "$chargewire_commit" "$work/chargewire-js"
 checkout "$hc_repo" "$hc_commit" "$work/hardcharger-js"
 
-# hardcharger-js names the warp-sql-js commit it was built and tested on: it must be ours.
-theirs=$(tr -d '[:space:]' < "$work/hardcharger-js/scripts/warp-sql-js.commit")
-if [ "$theirs" != "$warp_commit" ]; then
-  echo "hardcharger-js ${hc_commit:0:7} pins warp-sql-js $theirs, but scripts/warp-sql-js.commit is $warp_commit: pin the same commit" >&2
+# hardcharger-js names the chargewire-js commit it was built and tested on: it must be ours.
+theirs=$(tr -d '[:space:]' < "$work/hardcharger-js/scripts/chargewire-js.commit")
+if [ "$theirs" != "$chargewire_commit" ]; then
+  echo "hardcharger-js ${hc_commit:0:7} pins chargewire-js $theirs, but scripts/chargewire-js.commit is $chargewire_commit: pin the same commit" >&2
   exit 1
 fi
 
-build "$work/warp-sql-js" warp-sql-js
-warp_version=$(node -p 'require(process.argv[1]).version' "$work/warp-sql-js/package.json")
-mkdir -p "$work/hardcharger-js/.warp-sql"
-cp "$work/gizmodata-warp-sql-$warp_version.tgz" "$work/hardcharger-js/.warp-sql/"
+build "$work/chargewire-js" chargewire-js
+chargewire_version=$(node -p 'require(process.argv[1]).version' "$work/chargewire-js/package.json")
+mkdir -p "$work/hardcharger-js/.chargewire"
+cp "$work/gizmodata-chargewire-$chargewire_version.tgz" "$work/hardcharger-js/.chargewire/"
 build "$work/hardcharger-js" hardcharger-js
 hc_version=$(node -p 'require(process.argv[1]).version' "$work/hardcharger-js/package.json")
 
 if [ -f "$root/package-lock.json" ]; then
-  for pair in "warp-sql:$warp_version" "hardcharger:$hc_version"; do
+  for pair in "chargewire:$chargewire_version" "hardcharger:$hc_version"; do
     name="${pair%%:*}" want="${pair#*:}"
     locked=$(node -p "require(process.argv[1]).packages['node_modules/@gizmodata/$name']?.version ?? ''" "$root/package-lock.json")
     if [ -n "$locked" ] && [ "$locked" != "$want" ]; then
@@ -78,5 +78,5 @@ fi
 
 mkdir -p "$root/.clients"
 rm -f "$root"/.clients/gizmodata-*.tgz
-mv "$work/gizmodata-warp-sql-$warp_version.tgz" "$work/gizmodata-hardcharger-$hc_version.tgz" "$root/.clients/"
-echo "@gizmodata/warp-sql $warp_version (warp-sql-js ${warp_commit:0:7}) and @gizmodata/hardcharger $hc_version (hardcharger-js ${hc_commit:0:7}) -> .clients/"
+mv "$work/gizmodata-chargewire-$chargewire_version.tgz" "$work/gizmodata-hardcharger-$hc_version.tgz" "$root/.clients/"
+echo "@gizmodata/chargewire $chargewire_version (chargewire-js ${chargewire_commit:0:7}) and @gizmodata/hardcharger $hc_version (hardcharger-js ${hc_commit:0:7}) -> .clients/"

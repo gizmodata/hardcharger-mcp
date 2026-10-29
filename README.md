@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/MCP-server%20%2B%20Claude%20Desktop%20extension-d97757.svg" alt="MCP server and Claude Desktop extension">
   <img src="https://img.shields.io/badge/TypeScript-ESM-3178C6.svg?logo=typescript&logoColor=white" alt="TypeScript, ESM">
   <img src="https://img.shields.io/badge/Node-%E2%89%A522.19-339933.svg?logo=node.js&logoColor=white" alt="Node 22.19 or later">
-  <a href="https://github.com/gizmodata/warp-sql"><img src="https://img.shields.io/badge/protocol-Warp%20SQL%201.0.0-31a8db.svg" alt="Warp SQL protocol"></a>
+  <a href="https://github.com/gizmodata/chargewire"><img src="https://img.shields.io/badge/protocol-Chargewire%201.0.0-31a8db.svg" alt="Chargewire protocol"></a>
   <a href="https://github.com/gizmodata/hardcharger-js"><img src="https://img.shields.io/badge/built%20on-Hardcharger%20JS-31a8db.svg" alt="Built on the Hardcharger JavaScript client"></a>
   <a href="https://github.com/gizmodata/hardcharger"><img src="https://img.shields.io/badge/server-Hardcharger-f15a24.svg" alt="Hardcharger"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-brightgreen.svg" alt="Apache 2.0 license"></a>
@@ -31,16 +31,17 @@ lets Claude Desktop, Claude Code and any other MCP client explore your schema an
 a Hardcharger server you can reach from your machine (including private networks over VPN), or,
 over Streamable HTTP, serves a whole team behind OAuth.
 
-It speaks [Warp SQL](https://github.com/gizmodata/warp-sql), Hardcharger's HTTP protocol, through
+It speaks [Chargewire](https://github.com/gizmodata/chargewire), Hardcharger's HTTP protocol, through
 the Hardcharger JavaScript client ([`@gizmodata/hardcharger`](https://github.com/gizmodata/hardcharger-js)):
 pure JavaScript, no native driver, so one extension bundle serves every platform Claude Desktop
 runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: 2.0.0, with Hardcharger 2.0.0.** Built on `@gizmodata/hardcharger` 2.0.0 (hardcharger-js
-> `a6e93a2`, on `@gizmodata/warp-sql` 1.0.0, Warp SQL protocol 1.0.0); tested against
-> `hardcharger-server` 2.0.0-rc.1 and the image of Hardcharger's main branch.
+> **Status: 2.0.0, with Hardcharger 2.0.0.** Built on `@gizmodata/hardcharger` 2.0.2 (hardcharger-js
+> `4500bb5`, on `@gizmodata/chargewire` 1.0.0, chargewire-js `1227155`, Chargewire protocol 1.0.0);
+> tested against the image of Hardcharger's main branch and against Hardcharger 2.2.0, released
+> before the protocol was renamed to Chargewire.
 
 ## 🧰 Tools
 
@@ -154,7 +155,7 @@ Each connection takes one credential:
 | Setting | Sign-in |
 | --- | --- |
 | `HARDCHARGER_USERNAME` + `HARDCHARGER_PASSWORD` | Password (any character, `:` and `@` included) |
-| `HARDCHARGER_TOKEN` | A signed sign-in token the server trusts (`--token-allowed-issuer` with `--token-jwks-uri` or `--token-signature-verify-cert-path`), sent with Warp SQL's `token_exchange` grant. The same token also works as the password of user `token`. Its `role` claim (`admin`, `user`, `readonly`) decides what it may do |
+| `HARDCHARGER_TOKEN` | A signed sign-in token the server trusts (`--token-allowed-issuer` with `--token-jwks-uri` or `--token-signature-verify-cert-path`), sent with Chargewire's `token_exchange` grant. The same token also works as the password of user `token`. Its `role` claim (`admin`, `user`, `readonly`) decides what it may do |
 | `HARDCHARGER_MTLS_CERT` + `HARDCHARGER_MTLS_KEY` | Client certificate sign-in (mutual TLS) on a server started with `--mtls-certificate-sign-in`: the certificate is the credential. With a password or token beside them, the certificate only admits the connection |
 | `HARDCHARGER_ENABLE_SSO=true` | No stored credential: `login_sso` signs in through the server's identity provider in your browser |
 
@@ -175,7 +176,7 @@ the server's codes: `unknown_certificate_identity` (401) for a certificate that 
 `HARDCHARGER_TLS_ROOTS` or `HARDCHARGER_TLS_SKIP_VERIFY`).
 
 **Browser sign-in (`login_sso`).** On a server started with `--oauth-client-id` (and its identity
-provider settings), `login_sso` opens the provider's login page through the server's Warp SQL
+provider settings), `login_sso` opens the provider's login page through the server's Chargewire
 browser sign-in (on the connection's own URI and port), waits for you to finish, and connects with
 the Hardcharger access token the server hands out, kept in memory only; when it expires, call
 `login_sso` again. A refusal names its code (`access_denied`, `identity_provider_error`,
@@ -352,7 +353,7 @@ grants decide what each table allows.
   reaches the client is redacted.
 - The row cap is enforced by the server: reads run as `SELECT * FROM (<your query>) LIMIT
   max_rows + 1`, over one result stream that is closed at the cap, which stops the statement.
-- The timeout is the server's (Warp SQL `statementTimeoutMs`): it cancels a statement that runs too
+- The timeout is the server's (Chargewire `statementTimeoutMs`): it cancels a statement that runs too
   long, `execute_statement` included, and the error says `statement_timeout`. A client-side cancel
   a few seconds later is the backstop.
 - Lost sessions: when Hardcharger evicts an idle session, the client opens a replacement with the
@@ -397,11 +398,11 @@ After changing settings, start a new chat.
 
 ## 🛠️ Building and testing
 
-Node 22.19 or later. For development and CI, `@gizmodata/hardcharger` and `@gizmodata/warp-sql` are
+Node 22.19 or later. For development and CI, `@gizmodata/hardcharger` and `@gizmodata/chargewire` are
 built from [gizmodata/hardcharger-js](https://github.com/gizmodata/hardcharger-js) and
-[gizmodata/warp-sql-js](https://github.com/gizmodata/warp-sql-js) at the commits pinned in
+[gizmodata/chargewire-js](https://github.com/gizmodata/chargewire-js) at the commits pinned in
 [scripts/hardcharger-js.commit](scripts/hardcharger-js.commit) and
-[scripts/warp-sql-js.commit](scripts/warp-sql-js.commit), and packed to `.clients/`, where
+[scripts/chargewire-js.commit](scripts/chargewire-js.commit), and packed to `.clients/`, where
 `package-lock.json` finds them, so the tests run against those exact clients. `package.json`, and
 so the published package, names the npm package and its range (`^2.0.0`); the tarballs are a
 stand-in for development and CI only (`scripts/check-lock.mjs` checks both).
@@ -417,8 +418,8 @@ docker build -t hardcharger-mcp .   # container image for the HTTP transport
 helm lint charts/hardcharger-mcp    # Helm chart
 ```
 
-`HARDCHARGER_MCP_WARP_SQL_JS_REPO` and `HARDCHARGER_MCP_HARDCHARGER_JS_REPO` point `npm run clients`
-at local checkouts.
+`HARDCHARGER_MCP_CHARGEWIRE_JS_REPO` and `HARDCHARGER_MCP_HARDCHARGER_JS_REPO` point
+`npm run clients` at local checkouts.
 
 The live suites start `hardcharger-server` themselves, on free loopback ports, with a fresh
 administrator password that contains `:` and `@`, an empty home directory (DuckDB's secrets
@@ -440,7 +441,7 @@ Negative tests assert the error code (`invalid_credentials`, `permission_denied`
 Hardcharger's main branch (`ghcr.io/gizmodata/hardcharger:main`), pulled with the workflow's
 `GITHUB_TOKEN`; while the image is private the package must grant this repository read access
 (package settings, "Manage Actions access"), or the live jobs fail. CI clones the clients with
-`DEPLOY_KEY_WARP_SQL_JS` and `DEPLOY_KEY_HARDCHARGER_JS`, read-only deploy keys of those
+`DEPLOY_KEY_CHARGEWIRE_JS` and `DEPLOY_KEY_HARDCHARGER_JS`, read-only deploy keys of those
 repositories (needed while they are private).
 
 ## 📦 Releasing

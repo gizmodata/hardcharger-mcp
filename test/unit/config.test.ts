@@ -343,13 +343,13 @@ describe("isConnectionLost", () => {
     assert.equal(isConnectionLost(hcError("session_ended", { reason: "some_later_reason" })), true);
   });
 
-  it("never reopens a session ended because the sign-in was withdrawn (Warp SQL 4.2, 5.6)", () => {
+  it("never reopens a session ended because the sign-in was withdrawn (Chargewire 4.2, 5.6)", () => {
     for (const reason of ["token_revoked", "credentials_changed", "principal_dropped"]) {
       assert.equal(isConnectionLost(hcError("session_ended", { reason })), false, reason);
     }
   });
 
-  it("knows only the Warp SQL 1.0 client codes, not the old unprefixed ones", () => {
+  it("knows only the Chargewire 1.0 client codes, not the old unprefixed ones", () => {
     assert.equal(isConnectionLost(hcError("transport_error")), false);
     assert.equal(isConnectionLost(hcError("connection_closed")), false);
   });

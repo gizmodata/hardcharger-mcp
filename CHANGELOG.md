@@ -14,11 +14,11 @@ Fixed entries describe what moved since 0.1.0, for anyone who installed it from 
 <!-- Set the date above at tag time. -->
 
 ### Changed
-- Built on `@gizmodata/hardcharger` 2.0.0 (hardcharger-js `a6e93a2`, on `@gizmodata/warp-sql` 1.0.0,
-  warp-sql-js `903feb4`), the clients for Warp SQL protocol 1.0.0 with browser sign-in (were
+- Built on `@gizmodata/hardcharger` 2.0.0 (hardcharger-js `a6e93a2`, on `@gizmodata/chargewire` 1.0.0,
+  chargewire-js `903feb4`), the clients for Chargewire protocol 1.0.0 with browser sign-in (were
   `a4ac97c` and `6dea14c`). The chart, the extension manifest and the npm package are 2.0.0: the
   Hardcharger clients and integrations launch with the server's version.
-- **Breaking:** `login_sso` runs Warp SQL browser sign-in (§4.3) on the connection's own URI and
+- **Breaking:** `login_sso` runs Chargewire browser sign-in (§4.3) on the connection's own URI and
   port, through `@gizmodata/hardcharger`, as Hardcharger now offers it (its separate OAuth port and
   `/oauth/initiate` routes are gone). It signs in with the access token the server hands out, used
   as is (call `login_sso` again when it expires), instead of exchanging an ID token. A failed
@@ -31,10 +31,10 @@ Fixed entries describe what moved since 0.1.0, for anyone who installed it from 
   `client_transport_error` and `client_connection_closed` (was `transport_error`,
   `connection_closed`), the plain-HTTP hint keys on `client_transport_error`, and error messages
   name the new codes (e.g. `(client_transport_error)`, `(client_invalid_argument)`).
-- `server_info` on a Warp SQL server other than Hardcharger reads the DuckDB version from the
+- `server_info` on a Chargewire server other than Hardcharger reads the DuckDB version from the
   server-info key `duckdb_version` (was `engine_version`, which protocol 1.0.0 dropped).
 - A session ended with reason `token_revoked`, `credentials_changed` or `principal_dropped` is no
-  longer reopened with the configured credentials (Warp SQL §4.2, §5.6): the error, with its
+  longer reopened with the configured credentials (Chargewire §4.2, §5.6): the error, with its
   reason, is returned. `killed`, `token_expired`, no reason or an unknown reason still reopen once.
 
 ### Added
@@ -50,8 +50,8 @@ Fixed entries describe what moved since 0.1.0, for anyone who installed it from 
 ### Fixed
 - CI's live tests on main failed: the browser sign-in suite started `hardcharger-server` with
   `--oauth-port`, which Hardcharger 2.0.0-rc.1 removed (browser sign-in runs on the server's own
-  port, Warp SQL §4.3), so the server exited with "unknown option". The suite now passes
-  `--oauth-base-url` with the server's port (from the merged Warp SQL 1.0 work).
+  port, Chargewire §4.3), so the server exited with "unknown option". The suite now passes
+  `--oauth-base-url` with the server's port (from the merged Chargewire 1.0 work).
 
 ### Documentation
 
@@ -64,8 +64,8 @@ Fixed entries describe what moved since 0.1.0, for anyone who installed it from 
 
 The Hardcharger™ port of [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp) 0.4.11: the same
 tools, resource, transports, OAuth resource-server mode, per-user HTTP sessions, Claude Desktop
-extension, container image and Helm chart, on Hardcharger's Warp SQL protocol through
-`@gizmodata/hardcharger` (hardcharger-js `a4ac97c` on warp-sql-js `6dea14c`).
+extension, container image and Helm chart, on Hardcharger's Chargewire protocol through
+`@gizmodata/hardcharger` (hardcharger-js `a4ac97c` on chargewire-js `6dea14c`).
 
 ### Added
 - Tools `list_connections`, `use_connection`, `list_catalogs`, `list_schemas`, `list_tables`,
@@ -81,21 +81,21 @@ extension, container image and Helm chart, on Hardcharger's Warp SQL protocol th
   (`HARDCHARGER_MTLS_CERT` + `HARDCHARGER_MTLS_KEY`: alone, the certificate is the credential), or
   the server's browser sign-in (`login_sso`, the same OAuth routes as `hardcharger --auth-type
   external`; `HARDCHARGER_BROWSER` names the browser). `HARDCHARGER_TLS_ROOTS` trusts a private CA.
-- Query timeouts are the server's own (`statementTimeoutMs`, Warp SQL §6.9): a runaway statement is
+- Query timeouts are the server's own (`statementTimeoutMs`, Chargewire §6.9): a runaway statement is
   cancelled on the server and reported as `statement_timeout`, with a client-side cancel a few
   seconds later as backstop. This covers `execute_statement` too.
 - Lost sessions: the client replaces a session the server evicted and replays its catalog and
   schema, including ones set by `use_schema` or a `USE` run through `run_query`; a session an
   administrator killed, a closed connection or a transport failure reopens the connection once.
   `server_info` reports `session_replacements` and `reconnects`.
-- Errors keep the server's message with its Warp SQL code, SQLSTATE, HTTP status and request id
+- Errors keep the server's message with its Chargewire code, SQLSTATE, HTTP status and request id
   (`... (sql_error, SQLSTATE 42P01, HTTP 400, request r_...)`); errors raised before an answer get
   their code added (`(transport_error)`), and a TLS handshake against a plain-HTTP server says to
   add `?tls=false`.
 - `server_info` reports `HARDCHARGER_VERSION()`, `HARDCHARGER_USER()`, `HARDCHARGER_ROLE()`, the
   protocol and capabilities from discovery, the server's idle timeout from the session document,
   and settings from `hardcharger_settings()`.
-- Bind parameters travel as Warp SQL JSON parameters; a date, timestamp or binary parameter binds
+- Bind parameters travel as Chargewire JSON parameters; a date, timestamp or binary parameter binds
   the row as Arrow data through a prepared statement.
 - Claude Desktop extension (`.mcpb`): one all-JavaScript bundle for every platform (no native
   driver), with URI, token, client certificate and CA settings.
@@ -113,7 +113,7 @@ extension, container image and Helm chart, on Hardcharger's Warp SQL protocol th
 - The native ADBC driver and everything around it (bundled drivers per platform,
   `GIZMOSQL_DRIVER_LIB`, the install-script approval): the client is pure JavaScript.
 - The timed session refresh (`GIZMOSQL_SESSION_REFRESH_SECONDS`): GizmoSQL silently recreated an
-  evicted session, so the search path had to be re-applied on a timer; Warp SQL reports the loss
+  evicted session, so the search path had to be re-applied on a timer; Chargewire reports the loss
   and the client replays the session's options.
 - Host/port/plaintext settings (`GIZMOSQL_HOST`, `_PORT`, `_PLAINTEXT`): the URI says all three.
-- Flight SQL error unwrapping and the SqlInfo fallback, which have no Warp SQL counterpart.
+- Flight SQL error unwrapping and the SqlInfo fallback, which have no Chargewire counterpart.

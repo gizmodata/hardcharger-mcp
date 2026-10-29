@@ -10,7 +10,7 @@ sources:
   - https://github.com/gizmodata/hardcharger-mcp
 keywords:
   - hardcharger
-  - warp-sql
+  - chargewire
   - mcp
   - model-context-protocol
   - claude

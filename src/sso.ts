@@ -1,6 +1,6 @@
 // Optional browser sign-in through the server's identity provider (enabled with
-// HARDCHARGER_ENABLE_SSO=true): Warp SQL browser sign-in (§4.3, capability oauth_browser), on
-// the server's own Warp SQL port, through @gizmodata/hardcharger:
+// HARDCHARGER_ENABLE_SSO=true): Chargewire browser sign-in (§4.3, capability oauth_browser), on
+// the server's own Chargewire port, through @gizmodata/hardcharger:
 //
 //   startBrowserSignIn  POST {uri}/v1/auth/oauth/flows        -> flow id, poll secret, authorize URL
 //   open the authorize URL in the user's browser
@@ -24,7 +24,7 @@ import {
 
 import type { HardchargerConnection } from "./connection.js";
 
-/** The two Warp SQL calls a sign-in makes; replaceable in tests. */
+/** The two Chargewire calls a sign-in makes; replaceable in tests. */
 export interface BrowserSignInCalls {
   start(target: BrowserSignInTarget): Promise<BrowserSignInFlow>;
   poll(target: BrowserSignInTarget, flow: BrowserSignInFlow): Promise<BrowserSignInPoll>;
@@ -36,7 +36,7 @@ export interface SsoOptions {
   pollIntervalMs?: number;
   /** Test hook: replaces the browser opener. */
   openUrl?: (url: string) => Promise<void>;
-  /** Test hook: replaces the Warp SQL browser sign-in calls. */
+  /** Test hook: replaces the Chargewire browser sign-in calls. */
   calls?: BrowserSignInCalls;
 }
 
@@ -53,7 +53,7 @@ interface PendingSession {
 
 const pendingSessions = new WeakMap<HardchargerConnection, PendingSession>();
 
-const warpCalls: BrowserSignInCalls = {
+const chargewireCalls: BrowserSignInCalls = {
   start: (target) => startBrowserSignIn(target),
   poll: (target, flow) => pollBrowserSignIn({ ...target, flow }),
 };
@@ -117,7 +117,7 @@ function stale(session: PendingSession): boolean {
 
 /** Runs (or resumes) the browser sign-in flow for a connection. */
 export async function runSsoLogin(connection: HardchargerConnection, options: SsoOptions): Promise<SsoOutcome> {
-  const calls = options.calls ?? warpCalls;
+  const calls = options.calls ?? chargewireCalls;
   const openUrl = options.openUrl ?? openInBrowser;
   const target = connection.signInTarget();
   const redact = (err: unknown) => connection.redact(err instanceof Error ? err.message : String(err));

@@ -183,7 +183,7 @@ export async function ok<T = Record<string, unknown>>(client: Client, name: stri
   return r.structuredContent as T;
 }
 
-/** Asserts a tool call failed, with `code` (a Warp SQL error code) in its message, and returns the text. */
+/** Asserts a tool call failed, with `code` (a Chargewire error code) in its message, and returns the text. */
 export async function failsWith(client: Client, name: string, args: Record<string, unknown>, code: string | RegExp): Promise<string> {
   const r = await call(client, name, args);
   assert.equal(r.isError, true, `${name} should have failed: ${textOf(r)}`);

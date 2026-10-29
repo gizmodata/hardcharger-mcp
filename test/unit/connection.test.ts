@@ -62,7 +62,7 @@ function fakeServer(script: { failures?: Record<string, unknown[]>; badCatalogs?
     };
     return {
       sessionReplacements: script.replacements ?? 0,
-      server: { protocol: "warp-sql", protocol_versions: ["1"], capabilities: ["prepared_statements"] },
+      server: { protocol: "chargewire", protocol_versions: ["1"], capabilities: ["prepared_statements"] },
       metadata: {
         async catalogs() {
           return tableFromArrays({ catalog_name: ["memory", "system"] });

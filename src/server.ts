@@ -47,7 +47,7 @@ function instructions(registry: ConnectionRegistry, transport: "stdio" | "http",
   const multi = registry.names().length > 1;
   const scope = transport === "http" && !perUser ? " Session state (USE, use_connection) is shared by every client of this server." : "";
   return (
-    "Hardcharger is GizmoData's DuckDB 2.0 server (it speaks Warp SQL), so DuckDB SQL syntax and functions apply. " +
+    "Hardcharger is GizmoData's DuckDB 2.0 server (it speaks Chargewire), so DuckDB SQL syntax and functions apply. " +
     "Start with list_catalogs / list_schemas / list_tables / describe_table to discover the schema, then " +
     "use run_query for SELECT queries. Results are capped at a configurable number of rows; use LIMIT, " +
     "aggregation, or WHERE filters to keep results small. Bind user-supplied literals with ? placeholders " +
@@ -558,7 +558,7 @@ export function createServer(ctx: ServerContext): McpServer {
     {
       title: "Set default catalog/schema",
       description:
-        "Sets the session's default catalog and/or schema (Warp SQL session options, like DuckDB USE) so " +
+        "Sets the session's default catalog and/or schema (Chargewire session options, like DuckDB USE) so " +
         "unqualified table names resolve there for the rest of the session, including on a replacement " +
         "session if the server drops this one. Does not read or modify data.",
       inputSchema: jsonSchema2020({
@@ -763,7 +763,7 @@ export function createServer(ctx: ServerContext): McpServer {
         currentCatalog = String(t.getChildAt(4)?.get(0));
         currentSchema = String(t.getChildAt(5)?.get(0));
       } catch {
-        // A Warp SQL server other than Hardcharger: its server-info document names it.
+        // A Chargewire server other than Hardcharger: its server-info document names it.
         try {
           const info = await connection.run((c) => c.metadata.serverInfo());
           hardchargerVersion = `${String(info.server_name ?? "unknown server")} ${String(info.server_version ?? "")}`.trim();

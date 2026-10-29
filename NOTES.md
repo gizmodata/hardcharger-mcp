@@ -1,19 +1,20 @@
 # Implementation notes
 
 What differs from gizmosql-mcp under the hood, and known limitations. Verified against
-`@gizmodata/hardcharger` 2.0.0 (hardcharger-js `a6e93a2`, warp-sql-js `903feb4`),
-`@modelcontextprotocol/sdk` 1.32.1, `@anthropic-ai/mcpb` 2.1.2 and `hardcharger-server` 2.0.0-rc.1.
+`@gizmodata/hardcharger` 2.0.2 (hardcharger-js `4500bb5`, chargewire-js `1227155`),
+`@modelcontextprotocol/sdk` 1.32.1, `@anthropic-ai/mcpb` 2.1.2 and `hardcharger-server` 2.0.0-rc.1;
+the Chargewire clients also against Hardcharger 2.2.0, from before the protocol's rename.
 
 ## Client and protocol
 
-- The client is pure JavaScript over HTTP(S) (Warp SQL), so the `.mcpb` bundle has no native
+- The client is pure JavaScript over HTTP(S) (Chargewire), so the `.mcpb` bundle has no native
   driver, no per-platform prebuilds and no install scripts; `build-mcpb.sh` refuses a bundle with
   native code in it. Claude Desktop runs extensions under Electron's `utilityProcess` (Node 24.18
   in 1.44121.4), which meets the client's Node 22.19 floor. Not yet verified: a manual install of
   the bundle in Claude Desktop on each platform before the first release.
 - Lost sessions: GizmoSQL silently recreated an evicted session (same bearer token, server
   defaults), so gizmosql-mcp re-applied `USE` and the query timeout on a timer derived from
-  `gizmosql_settings()`. Warp SQL answers `session_not_found`; the client opens a replacement and
+  `gizmosql_settings()`. Chargewire answers `session_not_found`; the client opens a replacement and
   replays the session options it set (catalog, schema). So the search path is set as session
   options (`setOptions`), and after `use_schema` or a `USE` the effective catalog and schema are
   read back from the session document and set again, so the replay carries them. Eviction is not
@@ -23,10 +24,10 @@ What differs from gizmosql-mcp under the hood, and known limitations. Verified a
   gizmosql-mcp did for "session has been killed". A server restart is handled by the client
   alone: the old access token is refused, it signs in again with the password, then replaces the
   session. A session ended because the sign-in was withdrawn (reason `token_revoked`,
-  `credentials_changed` or `principal_dropped`, Warp SQL §4.2 and §5.6) is never reopened: the
+  `credentials_changed` or `principal_dropped`, Chargewire §4.2 and §5.6) is never reopened: the
   error, with its reason, is the answer. An expired token, no reason or a reason this version
   doesn't know reopens as `killed` does.
-- `hardcharger_sessions()` reports a UUID per session, not the Warp SQL session id the client
+- `hardcharger_sessions()` reports a UUID per session, not the Chargewire session id the client
   sees; `KILL SESSION` takes the former (`HARDCHARGER_CURRENT_SESSION()`).
 - Timeouts: `statementTimeoutMs` (§6.9) per statement; the server cancels and answers
   `statement_timeout`. The client-side `AbortSignal` (5 s later) cancels by statement id. Unlike
@@ -48,7 +49,7 @@ What differs from gizmosql-mcp under the hood, and known limitations. Verified a
 
 ## Browser sign-in
 
-`login_sso` runs Warp SQL browser sign-in (§4.3) through `@gizmodata/hardcharger`'s
+`login_sso` runs Chargewire browser sign-in (§4.3) through `@gizmodata/hardcharger`'s
 `startBrowserSignIn` and `pollBrowserSignIn`, on the connection's own URI (the server has no
 separate sign-in port): create a flow, open its `authorize_url`, poll at the server's interval. A
 completed flow hands out the server's own access token, used as is (`token`, never renewed); a

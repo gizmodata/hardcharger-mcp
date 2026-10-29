@@ -9,7 +9,7 @@ name: ci
 #   - the Claude Desktop extension bundle, the container image and the Helm chart.
 #
 # Access, with no personal token:
-#   - gizmodata/warp-sql-js and gizmodata/hardcharger-js through the DEPLOY_KEY_WARP_SQL_JS and
+#   - gizmodata/chargewire-js and gizmodata/hardcharger-js through the DEPLOY_KEY_CHARGEWIRE_JS and
 #     DEPLOY_KEY_HARDCHARGER_JS secrets, read-only deploy keys of those repositories (needed while
 #     they are private; plain clones once they are public): the clients job builds the commits
 #     pinned in scripts/*.commit and hands the tarballs to the other jobs, so a run tests the
@@ -43,23 +43,23 @@ env:
 
 jobs:
   clients:
-    name: "@gizmodata/hardcharger + @gizmodata/warp-sql (pinned commits)"
+    name: "@gizmodata/hardcharger + @gizmodata/chargewire (pinned commits)"
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - name: Deploy keys for gizmodata/warp-sql-js and gizmodata/hardcharger-js
+      - name: Deploy keys for gizmodata/chargewire-js and gizmodata/hardcharger-js
         env:
-          DEPLOY_KEY_WARP_SQL_JS: ${{ secrets.DEPLOY_KEY_WARP_SQL_JS }}
+          DEPLOY_KEY_CHARGEWIRE_JS: ${{ secrets.DEPLOY_KEY_CHARGEWIRE_JS }}
           DEPLOY_KEY_HARDCHARGER_JS: ${{ secrets.DEPLOY_KEY_HARDCHARGER_JS }}
         run: |
           # One SSH host alias per repository, each with its own key, and git rewrites the
           # repository's URL to its alias.
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          for repo in warp-sql-js hardcharger-js; do
+          for repo in chargewire-js hardcharger-js; do
             var="DEPLOY_KEY_$(echo "$repo" | tr 'a-z-' 'A-Z_')"
             key="${!var}"
             if [ -z "$key" ]; then
@@ -74,7 +74,7 @@ jobs:
         env:
           # The script's defaults are the public https URLs; while the repositories are private,
           # CI clones over SSH (the aliases above rewrite these). All of it goes at the public flip.
-          HARDCHARGER_MCP_WARP_SQL_JS_REPO: git@github.com:gizmodata/warp-sql-js.git
+          HARDCHARGER_MCP_CHARGEWIRE_JS_REPO: git@github.com:gizmodata/chargewire-js.git
           HARDCHARGER_MCP_HARDCHARGER_JS_REPO: git@github.com:gizmodata/hardcharger-js.git
         run: scripts/install-clients.sh
       - uses: actions/upload-artifact@v7

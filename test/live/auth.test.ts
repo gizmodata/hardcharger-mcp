@@ -1,7 +1,7 @@
 // Every way the MCP server signs in to Hardcharger, against real servers: password, a
 // signed sign-in token (token_exchange, and as the password of user "token"), browser
 // sign-in (login_sso, through the server's OAuth routes and a throwaway identity
-// provider), and client certificates (mutual TLS). Every refusal asserts its Warp SQL error
+// provider), and client certificates (mutual TLS). Every refusal asserts its Chargewire error
 // code, each beside a positive twin.
 
 import assert from "node:assert/strict";
@@ -100,7 +100,7 @@ describe("sign-in tokens and browser sign-in (an identity provider)", () => {
       ],
     });
     // A "browser" for login_sso: follows the sign-in redirects as a person's browser would
-    // (provider /authorize, then the server's /warp/v1/auth/oauth/callback), with no login page.
+    // (provider /authorize, then the server's /chargewire/v1/auth/oauth/callback), with no login page.
     browserDir = mkdtempSync(join(tmpdir(), "hardcharger-mcp-browser-"));
     const browser = join(browserDir, "browser.mjs");
     writeFileSync(
@@ -181,7 +181,7 @@ describe("sign-in tokens and browser sign-in (an identity provider)", () => {
     await failsWith(elsewhere, "run_query", { sql: "SELECT 1" }, "invalid_credentials");
   });
 
-  it("login_sso runs the server's browser sign-in on its Warp SQL port and connects with its access token", async () => {
+  it("login_sso runs the server's browser sign-in on its Chargewire port and connects with its access token", async () => {
     idp.nextLogin = { sub: "s", email: "sso-user@example.com", role: "admin" };
     const client = await mcp({
       HARDCHARGER_URI: server.uri,

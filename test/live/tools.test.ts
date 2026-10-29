@@ -85,7 +85,7 @@ describe("hardcharger-mcp tools against hardcharger-server", () => {
     assert.equal(s.role, "admin");
     assert.equal(s.auth_method, "password");
     assert.equal(s.tls, false);
-    assert.equal(s.protocol, "warp-sql 1");
+    assert.equal(s.protocol, "chargewire 1");
     assert.ok((s.capabilities as string[]).includes("prepared_statements"));
     assert.equal((s.hardcharger_settings as Record<string, string>)["hardcharger.version"], s.hardcharger_version);
     assert.equal(typeof s.hardcharger_session_idle_timeout_seconds, "number");
@@ -127,7 +127,7 @@ describe("hardcharger-mcp tools against hardcharger-server", () => {
     await failsWith(ro, "run_query", { sql: "SELECT 1", params: [1] }, /0 placeholders .* 1 parameter/);
   });
 
-  it("a server error keeps DuckDB's message with its Warp SQL code (sql_error) and SQLSTATE", async () => {
+  it("a server error keeps DuckDB's message with its Chargewire code (sql_error) and SQLSTATE", async () => {
     const bad = await failsWith(ro, "run_query", { sql: "SELECT no_such_column FROM mcp_it" }, "sql_error");
     assert.match(bad, /Binder Error/);
     const missing = await failsWith(ro, "run_query", { sql: "SELECT * FROM no_such_table" }, "sql_error");

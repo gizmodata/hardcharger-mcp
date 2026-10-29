@@ -7,7 +7,7 @@
 //   - the server restarts under a live connection (a new process, new signing key): the
 //     client signs in again and opens a new session.
 // GizmoSQL 1.x needed a timed "refresh" of the search path for the first case, because its
-// server silently recreated an evicted session; Warp SQL reports it (session_not_found).
+// server silently recreated an evicted session; Chargewire reports it (session_not_found).
 
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";

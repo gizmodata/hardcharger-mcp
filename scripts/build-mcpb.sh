@@ -10,7 +10,7 @@
 #                      bundle runs on every platform Claude Desktop does
 #
 # Needs the client tarballs in .clients/ (scripts/install-clients.sh), which package-lock.json
-# resolves @gizmodata/hardcharger and @gizmodata/warp-sql to while they are not on npm.
+# resolves @gizmodata/hardcharger and @gizmodata/chargewire to while they are not on npm.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

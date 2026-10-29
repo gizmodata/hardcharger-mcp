@@ -1,4 +1,4 @@
-// login_sso on Warp SQL browser sign-in (§4.3): the flow calls are scripted, so these tests pin
+// login_sso on Chargewire browser sign-in (§4.3): the flow calls are scripted, so these tests pin
 // how runSsoLogin reads each answer (pending, complete, a failed flow's code, a flow the server
 // no longer knows, a server without browser sign-in) without a server. test/live/auth.test.ts
 // runs the real flow against hardcharger-server and an identity provider.
@@ -104,7 +104,7 @@ describe("runSsoLogin", () => {
     assert.equal(r.authUrl, flow1.authorizeUrl);
     assert.match(r.message, /open this URL: https:\/\/idp\.test\/authorize/);
     assert.deepEqual(opened, [flow1.authorizeUrl]);
-    assert.deepEqual(started, [`hardcharger://127.0.0.1:${port}?tls=false`], "the Warp SQL port, no separate sign-in port");
+    assert.deepEqual(started, [`hardcharger://127.0.0.1:${port}?tls=false`], "the Chargewire port, no separate sign-in port");
     assert.ok(polled.length > 0);
     assert.ok(polled.every((p) => p.flowId === "f_1" && p.pollSecret === "poll-secret-1"));
   });
