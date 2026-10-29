@@ -5,7 +5,8 @@ name: ci
 #   - lint (eslint, the lock's shape), a real typecheck (src and tests), unit tests on Node 22,
 #     24 and 26 and on the dependency floors;
 #   - the live suites (Node 22 and 24) and the README's examples, against hardcharger-server from
-#     Hardcharger's main branch;
+#     Hardcharger's main branch, and the live suites also against a release from before the
+#     protocol's rename (2.2.0);
 #   - the Claude Desktop extension bundle, the container image and the Helm chart.
 #
 # Access, with no personal token:
@@ -40,6 +41,9 @@ env:
   # The server the live suites run against: Hardcharger's main branch, which its CI publishes on
   # every green push. Pin a :sha-<short> tag to reproduce an old run.
   HARDCHARGER_IMAGE: ghcr.io/gizmodata/hardcharger:main
+  # A release from before the protocol's rename: the live suite checks that the MCP server still
+  # reaches it (test/live/legacy-names-server.test.ts, which fails without it).
+  HARDCHARGER_OLD_IMAGE: ghcr.io/gizmodata/hardcharger:2.2.0
 
 jobs:
   clients:
@@ -189,6 +193,9 @@ jobs:
       matrix:
         node: [22, 24]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read # the pre-rename server's image
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -205,8 +212,29 @@ jobs:
         run: |
           tar -C "$RUNNER_TEMP" -xzf hardcharger.tar.gz
           echo "HARDCHARGER_MCP_TEST_SERVER_BINARY=$RUNNER_TEMP/hardcharger/bin/hardcharger-server" >> "$GITHUB_ENV"
+      - name: Start the pre-rename server
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin > /dev/null
+          if ! docker pull -q "$HARDCHARGER_OLD_IMAGE"; then
+            echo "::error::can't pull $HARDCHARGER_OLD_IMAGE with this workflow's GITHUB_TOKEN"
+            exit 1
+          fi
+          docker logout ghcr.io > /dev/null
+          password=$(openssl rand -hex 16)
+          echo "::add-mask::$password"
+          docker run -d --name hardcharger-old -e HARDCHARGER_ADMIN_PASSWORD="$password" \
+            -p 127.0.0.1:31347:31337 "$HARDCHARGER_OLD_IMAGE" > /dev/null
+          # Up when it answers HTTP at all (if it never does, the tests fail on connecting).
+          for _ in $(seq 1 60); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:31347/ || true)" != 000 ] && break
+            sleep 1
+          done
+          echo "HARDCHARGER_MCP_TEST_OLD_SERVER=127.0.0.1:31347" >> "$GITHUB_ENV"
+          echo "HARDCHARGER_MCP_TEST_OLD_SERVER_PASSWORD=$password" >> "$GITHUB_ENV"
       - run: npm ci
-      # Fails without the server, on any skipped test, and when no test passed.
+      # Fails without either server, on any skipped test, and when no test passed.
       - name: Live tests
         run: npm run test:live
 

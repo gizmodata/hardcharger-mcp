@@ -25,13 +25,24 @@ try {
   process.exit(1);
 }
 
+// The suite for a server from before the protocol's rename needs one already running
+// (HARDCHARGER_MCP_TEST_OLD_SERVER). On a developer's machine without it, that file is left
+// out of a full run, and said so; in CI (CI=true) it always runs, and fails without one.
+function leaveOutOldServer(file) {
+  if (!file.endsWith("legacy-names-server.test.ts")) return false;
+  if (process.env.HARDCHARGER_MCP_TEST_OLD_SERVER || process.env.CI === "true") return false;
+  console.log(`leaving out ${file}: HARDCHARGER_MCP_TEST_OLD_SERVER is not set`);
+  return true;
+}
+
 const files =
   process.argv.length > 2
     ? process.argv.slice(2)
     : readdirSync("test/live")
         .filter((f) => f.endsWith(".test.ts"))
         .sort()
-        .map((f) => join("test/live", f));
+        .map((f) => join("test/live", f))
+        .filter((f) => !leaveOutOldServer(f));
 if (files.length === 0) {
   console.error("FAIL: no live test files found");
   process.exit(1);

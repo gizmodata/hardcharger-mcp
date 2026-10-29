@@ -425,7 +425,11 @@ The live suites start `hardcharger-server` themselves, on free loopback ports, w
 administrator password that contains `:` and `@`, an empty home directory (DuckDB's secrets
 directory included), and only `PATH`, `HOME`, `TMPDIR` and the password in its environment; the MCP
 server under test gets `PATH`, `HOME` and the settings each test names, never your shell's. Without
-the binary they fail; they never skip, and a run in which no test passed fails too.
+the binary they fail; they never skip, and a run in which no test passed fails too. One suite
+checks a Hardcharger released before the protocol was renamed to Chargewire (the
+`ghcr.io/gizmodata/hardcharger:2.2.0` image, already running, plain HTTP), named by
+`HARDCHARGER_MCP_TEST_OLD_SERVER` (`host:port`, with `HARDCHARGER_MCP_TEST_OLD_SERVER_PASSWORD`);
+CI starts one. Without it a full local run leaves that suite out and says so; in CI it fails.
 
 ```bash
 export HARDCHARGER_MCP_TEST_SERVER_BINARY=/path/to/hardcharger-server
