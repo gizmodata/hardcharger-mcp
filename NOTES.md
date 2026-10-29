@@ -1,7 +1,7 @@
 # Implementation notes
 
 What differs from gizmosql-mcp under the hood, and known limitations. Verified against
-`@gizmodata/hardcharger` 2.1.0 (hardcharger-js `b3622f5`, chargewire-js `1ea10dd`),
+`@gizmodata/hardcharger` 2.1.0 (hardcharger-js `1a524f6`, chargewire-js `1ea10dd`),
 `@modelcontextprotocol/sdk` 1.32.1, `@anthropic-ai/mcpb` 2.1.2 and `hardcharger-server` 2.3.0;
 the Chargewire clients also against Hardcharger 2.2.0, from before the protocol's rename.
 

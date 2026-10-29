@@ -39,7 +39,7 @@ runs on. It is the Hardcharger port of
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
 > **Status: 2.1.0, with Hardcharger 2.3.0.** Built on `@gizmodata/hardcharger` 2.1.0 (hardcharger-js
-> `b3622f5`, on `@gizmodata/chargewire` 2.0.0, chargewire-js `1ea10dd`, Chargewire protocol 1.0.0);
+> `1a524f6`, on `@gizmodata/chargewire` 2.0.0, chargewire-js `1ea10dd`, Chargewire protocol 1.0.0);
 > tested against the image of Hardcharger's main branch and against Hardcharger 2.2.0, released
 > before the protocol was renamed to Chargewire.
 
