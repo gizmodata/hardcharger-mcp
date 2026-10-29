@@ -10,16 +10,14 @@ name: ci
 #   - the Claude Desktop extension bundle, the container image and the Helm chart.
 #
 # Access, with no personal token:
-#   - gizmodata/chargewire-js and gizmodata/hardcharger-js through the DEPLOY_KEY_CHARGEWIRE_JS and
-#     DEPLOY_KEY_HARDCHARGER_JS secrets, read-only deploy keys of those repositories (needed while
-#     they are private; plain clones once they are public): the clients job builds the commits
-#     pinned in scripts/*.commit and hands the tarballs to the other jobs, so a run tests the
-#     pinned clients, never published versions;
+#   - gizmodata/chargewire-js and gizmodata/hardcharger-js are public, cloned anonymously over
+#     https: the clients job builds the commits pinned in scripts/*.commit and hands the
+#     tarballs to the other jobs, so a run tests the pinned clients, never published versions;
 #   - hardcharger-server from the image ghcr.io/gizmodata/hardcharger, pulled with this
 #     workflow's GITHUB_TOKEN. While the image is private the package must grant this
 #     repository read access (package settings, Manage Actions access); once it is public the
 #     login is unnecessary but harmless.
-# Without either, the job that needs it fails, and every job after it: nothing is skipped.
+# Without the image, the jobs that need it fail, and every job after them: nothing is skipped.
 
 on:
   push:
@@ -54,32 +52,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - name: Deploy keys for gizmodata/chargewire-js and gizmodata/hardcharger-js
-        env:
-          DEPLOY_KEY_CHARGEWIRE_JS: ${{ secrets.DEPLOY_KEY_CHARGEWIRE_JS }}
-          DEPLOY_KEY_HARDCHARGER_JS: ${{ secrets.DEPLOY_KEY_HARDCHARGER_JS }}
-        run: |
-          # One SSH host alias per repository, each with its own key, and git rewrites the
-          # repository's URL to its alias.
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          for repo in chargewire-js hardcharger-js; do
-            var="DEPLOY_KEY_$(echo "$repo" | tr 'a-z-' 'A-Z_')"
-            key="${!var}"
-            if [ -z "$key" ]; then
-              echo "::error::the $var secret is not set: the private key of a read-only deploy key of gizmodata/$repo"
-              exit 1
-            fi
-            printf '%s\n' "$key" > ~/.ssh/"$repo" && chmod 600 ~/.ssh/"$repo"
-            printf 'Host github.com-%s\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/%s\n  IdentitiesOnly yes\n' "$repo" "$repo" >> ~/.ssh/config
-            git config --global url."git@github.com-$repo:gizmodata/$repo.git".insteadOf "git@github.com:gizmodata/$repo.git"
-          done
+      # The script's defaults: https://github.com/gizmodata/{chargewire-js,hardcharger-js}.git,
+      # both public, cloned anonymously.
       - name: Build and pack the pinned commits
-        env:
-          # The script's defaults are the public https URLs; while the repositories are private,
-          # CI clones over SSH (the aliases above rewrite these). All of it goes at the public flip.
-          HARDCHARGER_MCP_CHARGEWIRE_JS_REPO: git@github.com:gizmodata/chargewire-js.git
-          HARDCHARGER_MCP_HARDCHARGER_JS_REPO: git@github.com:gizmodata/hardcharger-js.git
         run: scripts/install-clients.sh
       - uses: actions/upload-artifact@v7
         with:

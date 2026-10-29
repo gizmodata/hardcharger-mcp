@@ -36,7 +36,7 @@ jobs:
     permissions:
       contents: read
       packages: read # the server image the live suites run against
-    secrets: inherit # DEPLOY_KEY_CHARGEWIRE_JS, DEPLOY_KEY_HARDCHARGER_JS
+    secrets: inherit # none needed today; any secret ci.yml takes on later reaches it
 
   github-release:
     needs: tests

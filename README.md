@@ -39,7 +39,7 @@ runs on. It is the Hardcharger port of
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
 > **Status: 2.0.0, with Hardcharger 2.0.0.** Built on `@gizmodata/hardcharger` 2.0.2 (hardcharger-js
-> `4500bb5`, on `@gizmodata/chargewire` 1.0.0, chargewire-js `1227155`, Chargewire protocol 1.0.0);
+> `d7cc8d1`, on `@gizmodata/chargewire` 1.0.0, chargewire-js `1227155`, Chargewire protocol 1.0.0);
 > tested against the image of Hardcharger's main branch and against Hardcharger 2.2.0, released
 > before the protocol was renamed to Chargewire.
 
@@ -408,7 +408,7 @@ so the published package, names the npm package and its range (`^2.0.0`); the ta
 stand-in for development and CI only (`scripts/check-lock.mjs` checks both).
 
 ```bash
-npm run clients        # clone both clients (git access needed), build and pack the pinned commits
+npm run clients        # clone both clients, build and pack the pinned commits
 npm ci
 npm run lint:ci        # eslint and the lock's shape
 npm run typecheck      # src and tests
@@ -444,9 +444,8 @@ Negative tests assert the error code (`invalid_credentials`, `permission_denied`
 `invalid_option_value`), each beside a positive twin. CI runs everything against the image of
 Hardcharger's main branch (`ghcr.io/gizmodata/hardcharger:main`), pulled with the workflow's
 `GITHUB_TOKEN`; while the image is private the package must grant this repository read access
-(package settings, "Manage Actions access"), or the live jobs fail. CI clones the clients with
-`DEPLOY_KEY_CHARGEWIRE_JS` and `DEPLOY_KEY_HARDCHARGER_JS`, read-only deploy keys of those
-repositories (needed while they are private).
+(package settings, "Manage Actions access"), or the live jobs fail. CI clones both clients
+anonymously over https.
 
 ## 📦 Releasing
 
