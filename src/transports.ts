@@ -6,7 +6,8 @@ import * as http from "node:http";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
-import { redactSecrets, type McpConfig } from "./connection.js";
+import { BrokerClient, BrokeredRegistry } from "./broker.js";
+import { ConfigError, redactSecrets, type McpConfig } from "./connection.js";
 import { OAuthError, OAuthVerifier, OFFLINE_ACCESS_SCOPE, protectedResourceMetadataPaths, type AuthenticatedUser } from "./oauth.js";
 import { OAuthFacade, facadeMetadataPaths, facadeTokenPath } from "./oauth-facade.js";
 import { ConnectionRegistry } from "./registry.js";
@@ -18,6 +19,7 @@ const log = (message: string) => console.error(message);
 
 /** "host:port" for one connection, or "name=host:port, ..." for several. */
 function describeTargets(config: McpConfig): string {
+  if (config.broker) return `connections per user from broker ${config.broker.url}`;
   if (config.connections.length === 1) {
     const c = config.connections[0];
     return c.uri;
@@ -43,6 +45,9 @@ function installShutdown(closeAll: () => Promise<void>, extra?: () => Promise<vo
 
 /** Runs the server on stdio (Claude Desktop / `claude mcp add`). */
 export async function startStdio(config: McpConfig): Promise<void> {
+  if (config.broker) {
+    throw new ConfigError("HARDCHARGER_MCP_BROKER_URL works with the HTTP transport only (--transport http), with OAuth.");
+  }
   const registry = new ConnectionRegistry(config, log);
   const server = createServer({ registry, config, transport: "stdio" });
   const transport = new StdioServerTransport();
@@ -55,11 +60,17 @@ export async function startStdio(config: McpConfig): Promise<void> {
   log(`[hardcharger-mcp] ${PACKAGE_NAME} ${PACKAGE_VERSION} ready on stdio (${describeTargets(config)}, writes ${config.allowWrites ? "enabled" : "disabled"})`);
 }
 
-function bearerMatches(header: string | undefined, expected: string): boolean {
-  if (!header) return false;
+/** The token of an `Authorization: Bearer` header. */
+function bearerToken(header: string | undefined): string | undefined {
+  if (!header) return undefined;
   const m = /^Bearer\s+(.+)$/iu.exec(header.trim());
-  if (!m) return false;
-  const a = Buffer.from(m[1]);
+  return m ? m[1] : undefined;
+}
+
+function bearerMatches(header: string | undefined, expected: string): boolean {
+  const token = bearerToken(header);
+  if (token === undefined) return false;
+  const a = Buffer.from(token);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
 }
@@ -69,6 +80,8 @@ export interface HttpOptions {
   port: number;
   /** Test hook: replaces the OAuth verifier built from the config. */
   verifier?: OAuthVerifier;
+  /** Test hook: replaces the connection broker client built from the config. */
+  broker?: BrokerClient;
   /** Test hook: disables the SIGINT/SIGTERM handlers. */
   installSignalHandlers?: boolean;
 }
@@ -142,9 +155,18 @@ export async function startHttp(config: McpConfig, options: HttpOptions): Promis
   const bearer = config.mcpBearerToken;
   const oauth = config.mcpOAuth;
   const verifier = options.verifier ?? (oauth ? new OAuthVerifier(oauth, { log }) : undefined);
+  if (config.broker && !verifier) {
+    throw new ConfigError("HARDCHARGER_MCP_BROKER_URL needs OAuth (HARDCHARGER_MCP_OAUTH_ISSUER): credentials are issued per signed-in user.");
+  }
+  const broker = config.broker ? (options.broker ?? new BrokerClient(config.broker)) : undefined;
   // Per-user sessions need an identity, so they exist only with OAuth.
   const sessions = verifier
-    ? new SessionStore(config, { idleSeconds: config.mcpSessionIdleSeconds, maxSessions: config.mcpMaxSessions, log })
+    ? new SessionStore(config, {
+        idleSeconds: config.mcpSessionIdleSeconds,
+        maxSessions: config.mcpMaxSessions,
+        log,
+        createRegistry: broker ? (userLog) => new BrokeredRegistry(config, broker, userLog) : undefined,
+      })
     : undefined;
   const sharedRegistry = sessions ? undefined : new ConnectionRegistry(config, log);
   // Used only for redacting log lines; secrets are the same in every registry.
@@ -259,6 +281,11 @@ export async function startHttp(config: McpConfig, options: HttpOptions): Promis
       const acquired = sessions.acquire(sessionKey(verifier.config.issuer, auth.user), auth.user.name);
       registry = acquired.registry;
       session = acquired.info;
+      if (registry instanceof BrokeredRegistry) {
+        // The token this request carried (just verified) is what the broker sees as the caller.
+        registry.setSubjectToken(bearerToken(req.headers.authorization) ?? "");
+        await registry.refresh();
+      }
     } else {
       registry = sharedRegistry!;
     }
