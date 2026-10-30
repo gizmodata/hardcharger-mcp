@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-30
+
 ### Added
 - Per-person credentials through a connection broker (`HARDCHARGER_MCP_BROKER_URL`,
   `HARDCHARGER_MCP_BROKER_TOKEN`, HTTP transport with OAuth). The server then holds no Hardcharger

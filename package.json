@@ -1,6 +1,6 @@
 {
   "name": "@gizmodata/hardcharger-mcp",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Model Context Protocol (MCP) server and Claude Desktop extension for Hardcharger\u2122, GizmoData\u2122's DuckDB 2.0 server",
   "author": "GizmoData LLC",
   "license": "Apache-2.0",
