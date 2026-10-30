@@ -18,7 +18,18 @@ import type { OAuthConfig } from "./oauth.js";
 import type { BoundParams } from "./params.js";
 
 /** How a connection signs in. */
-export type AuthMethod = "password" | "token" | "mtls" | "sso" | "none";
+export type AuthMethod = "password" | "token" | "mtls" | "sso" | "brokered" | "none";
+
+/**
+ * Where a brokered connection gets its sign-in tokens: the connection broker mints one for the
+ * calling user each time the client signs in (see broker.ts).
+ */
+export interface TokenSource {
+  /** A signed sign-in token for this user and server, for the token_exchange grant. */
+  token(): Promise<string>;
+  /** Tokens this source has handed out or holds, for redaction. */
+  secrets(): string[];
+}
 
 /** Settings for one Hardcharger server. */
 export interface ConnectionConfig {
@@ -47,6 +58,18 @@ export interface ConnectionConfig {
   defaultSchema?: string;
   /** Per-statement timeout applied to this connection's statements (0 = none). */
   queryTimeoutSeconds: number;
+  /** Brokered connections: the broker's id for this server. */
+  id?: string;
+  /** Brokered connections: a human description (e.g. organization / project / cluster). */
+  label?: string;
+  /**
+   * Brokered connections: whether the broker lets this user write through this server. Writes
+   * also need HARDCHARGER_ALLOW_WRITES, which stays the server-wide ceiling. Unset means the
+   * server-wide setting alone decides.
+   */
+  allowWrites?: boolean;
+  /** Brokered connections: the per-user sign-in tokens (token_exchange grant). */
+  tokenSource?: TokenSource;
 }
 
 /** Whole-server settings plus every configured connection (the first is the initial default). */
@@ -66,6 +89,23 @@ export interface McpConfig {
   mcpMaxSessions: number;
   /** Enables the optional `login_sso` tool (the server's OAuth browser sign-in). */
   enableSso: boolean;
+  /**
+   * HTTP transport with OAuth: a connection broker supplies each caller's connections and
+   * sign-in tokens (HARDCHARGER_MCP_BROKER_URL); `connections` is then empty.
+   */
+  broker?: BrokerConfig;
+}
+
+/** Settings for the connection broker (see broker.ts and docs/connection-broker.md). */
+export interface BrokerConfig {
+  /** Base URL of the broker's API: `<url>/connections` and `<url>/connections/<id>/token`. */
+  url: string;
+  /** This MCP server's own credential at the broker, sent as a bearer token. */
+  credential: string;
+  /** How long a caller's connection list is reused before the broker is asked again. */
+  cacheSeconds: number;
+  /** Timeout of one broker request. */
+  timeoutMs: number;
 }
 
 export const DEFAULTS = {
@@ -75,6 +115,8 @@ export const DEFAULTS = {
   connectionName: "default",
   sessionIdleSeconds: 1800,
   maxSessions: 200,
+  brokerCacheSeconds: 60,
+  brokerTimeoutMs: 10_000,
 } as const;
 
 /** Extra connection slots the Claude Desktop manifest exposes (`HARDCHARGER_2_*`, `HARDCHARGER_3_*`). */
@@ -270,7 +312,15 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): McpConfig {
     if (c) connections.push(c);
   }
 
-  if (connections.length === 0) {
+  const broker = parseBroker(env);
+  if (broker !== undefined && connections.length > 0) {
+    throw new ConfigError(
+      "HARDCHARGER_MCP_BROKER_URL supplies every caller's connections; remove " +
+        `${connections.map((c) => c.name).join(", ")} (HARDCHARGER_URI and the other connection settings): a configured ` +
+        "connection's credentials would be shared by every user of this server.",
+    );
+  }
+  if (connections.length === 0 && broker === undefined) {
     throw new ConfigError(
       "HARDCHARGER_URI is required: the Hardcharger server's URI, e.g. hardcharger://db.example.com " +
         "(TLS to port 31337), or hardcharger://localhost?tls=false for a server without TLS.",
@@ -290,6 +340,12 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): McpConfig {
   if (mcpBearerToken !== undefined && mcpOAuth !== undefined) {
     throw new ConfigError(
       "HARDCHARGER_MCP_BEARER_TOKEN and HARDCHARGER_MCP_OAUTH_ISSUER are mutually exclusive: pick one way to authenticate HTTP clients.",
+    );
+  }
+  if (broker !== undefined && mcpOAuth === undefined) {
+    throw new ConfigError(
+      "HARDCHARGER_MCP_BROKER_URL needs HARDCHARGER_MCP_OAUTH_ISSUER: the broker issues credentials per signed-in user, " +
+        "so every request must carry a verified identity (HTTP transport with OAuth).",
     );
   }
 
@@ -315,6 +371,43 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): McpConfig {
       max: 100000,
     }),
     enableSso,
+    broker,
+  };
+}
+
+/**
+ * Reads the connection broker settings (HTTP transport with OAuth). Returns undefined unless
+ * HARDCHARGER_MCP_BROKER_URL is set. A plain http URL needs
+ * HARDCHARGER_MCP_BROKER_ALLOW_INSECURE=true (local testing).
+ */
+export function parseBroker(env: NodeJS.ProcessEnv): BrokerConfig | undefined {
+  const allowHttp = parseBoolean("HARDCHARGER_MCP_BROKER_ALLOW_INSECURE", env.HARDCHARGER_MCP_BROKER_ALLOW_INSECURE, false);
+  const url = parseHttpsUrl("HARDCHARGER_MCP_BROKER_URL", env.HARDCHARGER_MCP_BROKER_URL, { allowHttp });
+  if (url === undefined) {
+    for (const key of Object.keys(env)) {
+      if (key.startsWith("HARDCHARGER_MCP_BROKER_") && key !== "HARDCHARGER_MCP_BROKER_ALLOW_INSECURE" && !isUnset(env[key])) {
+        throw new ConfigError(`${key} is set but HARDCHARGER_MCP_BROKER_URL is not; the URL enables the connection broker.`);
+      }
+    }
+    return undefined;
+  }
+  const credential = nonEmpty(env.HARDCHARGER_MCP_BROKER_TOKEN);
+  if (credential === undefined) {
+    throw new ConfigError(
+      "HARDCHARGER_MCP_BROKER_TOKEN is required with HARDCHARGER_MCP_BROKER_URL: this server's own credential at the " +
+        "broker. Callers' tokens are presented to the broker as subject tokens, never as its credential.",
+    );
+  }
+  return {
+    url,
+    credential,
+    cacheSeconds: parseInteger(
+      "HARDCHARGER_MCP_BROKER_CACHE_SECONDS",
+      env.HARDCHARGER_MCP_BROKER_CACHE_SECONDS,
+      DEFAULTS.brokerCacheSeconds,
+      { min: 0, max: 3600 },
+    ),
+    timeoutMs: DEFAULTS.brokerTimeoutMs,
   };
 }
 
@@ -388,8 +481,9 @@ export function parseOAuth(env: NodeJS.ProcessEnv): OAuthConfig | undefined {
 
 /** The sign-in a connection's settings call for (before any login_sso). */
 export function authMethod(
-  config: Pick<ConnectionConfig, "username" | "token" | "mtlsCertFile">,
+  config: Pick<ConnectionConfig, "username" | "token" | "mtlsCertFile" | "tokenSource">,
 ): AuthMethod {
+  if (config.tokenSource !== undefined) return "brokered";
   if (config.username !== undefined) return "password";
   if (config.token !== undefined) return "token";
   if (config.mtlsCertFile !== undefined) return "mtls";
@@ -597,7 +691,7 @@ export class HardchargerConnection {
 
   /** Secrets to redact from any message that might reach a client. */
   secrets(): Array<string | undefined> {
-    return [this.config.password, this.config.token, this.overrides.accessToken];
+    return [this.config.password, this.config.token, this.overrides.accessToken, ...(this.config.tokenSource?.secrets() ?? [])];
   }
 
   redact(text: string): string {
@@ -678,6 +772,10 @@ export class HardchargerConnection {
     if (tls !== undefined) options.tls = tls;
     if (this.overrides.accessToken !== undefined) {
       options.token = this.overrides.accessToken;
+    } else if (cfg.tokenSource !== undefined) {
+      const source = cfg.tokenSource;
+      // Called for every new sign-in: a fresh token from the broker, for this user.
+      options.subjectToken = () => source.token();
     } else if (cfg.username !== undefined) {
       options.username = cfg.username;
       options.password = cfg.password ?? "";

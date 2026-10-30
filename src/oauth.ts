@@ -14,6 +14,8 @@
 // The Hardcharger connection itself keeps using the configured service
 // credentials: the caller's token is validated here and never forwarded.
 
+import { createHash } from "node:crypto";
+
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
 
 export interface OAuthConfig {
@@ -146,12 +148,31 @@ export function userFromClaims(claims: JWTPayload, userClaims: string[]): Authen
   };
 }
 
+/** What an introspection says about a token (RFC 7662 style): who it belongs to, if it is active. */
+export interface IntrospectionResult {
+  active: boolean;
+  sub?: string;
+  email?: string;
+  name?: string;
+}
+
+/** How long a positive introspection is reused for the same token. */
+export const INTROSPECTION_CACHE_MS = 60_000;
+const INTROSPECTION_CACHE_MAX = 10_000;
+
 export interface VerifierOptions {
   /** Test hook: replaces global fetch for discovery. */
   fetch?: typeof fetch;
   /** Test hook: replaces the remote JWKS key resolver. */
   getKey?: JWTVerifyGetKey;
   log?: (message: string) => void;
+  /**
+   * Asks someone else whether a token is active instead of verifying it as a JWT (a connection
+   * broker, for providers whose access tokens are opaque). Errors other than "inactive" propagate.
+   */
+  introspect?: (token: string) => Promise<IntrospectionResult>;
+  /** Test hook: clock (ms). */
+  now?: () => number;
 }
 
 /** Verifies bearer tokens against one OpenID Connect provider. */
@@ -160,6 +181,10 @@ export class OAuthVerifier {
   private discovering: Promise<JWTVerifyGetKey> | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly log: (message: string) => void;
+  private readonly introspect: VerifierOptions["introspect"];
+  private readonly now: () => number;
+  /** Positive introspections by token hash, with when they stop being reused. */
+  private readonly introspected = new Map<string, { claims: JWTPayload; until: number }>();
 
   constructor(
     readonly config: OAuthConfig,
@@ -168,6 +193,13 @@ export class OAuthVerifier {
     this.fetchImpl = options.fetch ?? fetch;
     this.log = options.log ?? ((m) => console.error(m));
     if (options.getKey) this.keyResolver = options.getKey;
+    this.introspect = options.introspect;
+    this.now = options.now ?? (() => Date.now());
+  }
+
+  /** True when tokens are checked by introspection rather than as JWTs. */
+  get introspects(): boolean {
+    return this.introspect !== undefined;
   }
 
   /** RFC 9728 protected-resource metadata document; `authorizationServer` overrides the issuer (token-proxy facade). */
@@ -202,18 +234,22 @@ export class OAuthVerifier {
     if (!m) throw new OAuthError("invalid_token", "Bearer token required");
     const token = m[1].trim();
 
-    const getKey = await this.resolveKeys();
     let claims: JWTPayload;
-    try {
-      const result = await jwtVerify(token, getKey, {
-        issuer: this.config.issuer,
-        audience: this.config.audiences,
-        algorithms: ALLOWED_ALGORITHMS,
-        clockTolerance: CLOCK_TOLERANCE_SECONDS,
-      });
-      claims = result.payload;
-    } catch (err) {
-      throw new OAuthError("invalid_token", err instanceof Error ? err.message : String(err));
+    if (this.introspect) {
+      claims = await this.introspectToken(token);
+    } else {
+      const getKey = await this.resolveKeys();
+      try {
+        const result = await jwtVerify(token, getKey, {
+          issuer: this.config.issuer,
+          audience: this.config.audiences,
+          algorithms: ALLOWED_ALGORITHMS,
+          clockTolerance: CLOCK_TOLERANCE_SECONDS,
+        });
+        claims = result.payload;
+      } catch (err) {
+        throw new OAuthError("invalid_token", err instanceof Error ? err.message : String(err));
+      }
     }
 
     const user = userFromClaims(claims, this.config.userClaims);
@@ -225,6 +261,31 @@ export class OAuthVerifier {
       }
     }
     return user;
+  }
+
+  /**
+   * Claims for an introspected token: reused for INTROSPECTION_CACHE_MS when active, so a burst of
+   * MCP requests costs one introspection. An inactive token is never cached.
+   */
+  private async introspectToken(token: string): Promise<JWTPayload> {
+    const key = createHash("sha256").update(token).digest("hex");
+    const now = this.now();
+    const cached = this.introspected.get(key);
+    if (cached && now < cached.until) return cached.claims;
+    const result = await this.introspect!(token);
+    if (!result.active || !result.sub) {
+      this.introspected.delete(key);
+      throw new OAuthError("invalid_token", "The token is not active");
+    }
+    const claims: JWTPayload = { sub: result.sub };
+    if (result.email) claims.email = result.email;
+    if (result.name) claims.name = result.name;
+    if (this.introspected.size >= INTROSPECTION_CACHE_MAX) {
+      for (const [k, v] of this.introspected) if (v.until <= now) this.introspected.delete(k);
+      if (this.introspected.size >= INTROSPECTION_CACHE_MAX) this.introspected.delete(this.introspected.keys().next().value!);
+    }
+    this.introspected.set(key, { claims, until: now + INTROSPECTION_CACHE_MS });
+    return claims;
   }
 
   private resolveKeys(): Promise<JWTVerifyGetKey> {

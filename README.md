@@ -197,7 +197,8 @@ Microsoft Entra ID, Okta (custom authorization server), Auth0, Keycloak, Cognito
 is an OAuth 2.1 *resource server*: it verifies each bearer token against the provider's JWKS
 (issuer, audience, signature, expiry) and serves the RFC 9728 metadata at
 `/.well-known/oauth-protected-resource[/mcp]` so clients find the provider on their own. The token
-is never forwarded; the Hardcharger connection uses the configured service credentials.
+is never forwarded; the Hardcharger connection uses the configured service credentials, or, with a
+[connection broker](#-per-person-credentials-connection-broker), each person's own.
 
 <!-- example: http-oauth -->
 ```bash
@@ -237,8 +238,10 @@ connector enters the app registration's client ID and secret under *Advanced set
 `https://claude.ai/api/mcp/auth_callback`, *Expose an API* with the MCP URL as Application ID URI
 and a scope such as `access_as_user`, `requestedAccessTokenVersion` 2; v2 tokens carry the client ID
 as `aud`). **Okta** needs a custom authorization server; **Auth0** an API with the audience;
-**Keycloak** works out of the box; **Clerk** issues JWT access tokens by default. Providers with
-opaque access tokens (Google) are not supported in this mode.
+**Keycloak** works out of the box; **Clerk** issues opaque access tokens unless the instance has
+*JWT access tokens* turned on (checked 2026-10-30), so turn that on for this mode. Providers with
+opaque access tokens (Google) are not supported in this mode; with a connection broker they are,
+because the broker checks the tokens.
 
 **Static bearer token.** For a quick shared secret instead of OAuth, set
 `HARDCHARGER_MCP_BEARER_TOKEN`; every request must then send `Authorization: Bearer <token>`. The
@@ -252,6 +255,38 @@ HARDCHARGER_USERNAME=hardcharger HARDCHARGER_PASSWORD=change-me \
 HARDCHARGER_MCP_BEARER_TOKEN=a-long-random-secret \
 npx -y @gizmodata/hardcharger-mcp --transport http --port 3000
 ```
+
+### 🪪 Per-person credentials (connection broker)
+
+With a connection broker, the server holds no Hardcharger credentials at all. A broker, usually
+the control plane that runs your Hardcharger servers (GizmoData Cloud is one), tells it which
+servers each signed-in person may reach and mints that person a short-lived sign-in token for
+each one. The client exchanges the token (Chargewire token_exchange), so every statement runs
+**as that person**: the server's access control (grants, row policies, masking) decides what
+they may see and change, and its audit log names them. One connector serves everyone, and each
+person sees only their own servers in `list_connections`.
+
+```bash
+HARDCHARGER_MCP_PUBLIC_URL=https://mcp.example.com/mcp \
+HARDCHARGER_MCP_OAUTH_ISSUER=https://login.example.com \
+HARDCHARGER_MCP_BROKER_URL=https://control-plane.example.com/api/mcp-broker \
+HARDCHARGER_MCP_BROKER_TOKEN=this-servers-own-broker-credential \
+HARDCHARGER_ALLOW_WRITES=true \
+npx -y @gizmodata/hardcharger-mcp --transport http --host 0.0.0.0 --port 3000
+```
+
+The broker also checks each request's access token (`/introspect`), so the provider's tokens may be
+opaque (Clerk's are by default) and this server needs none of the provider's keys or credentials;
+`HARDCHARGER_MCP_OAUTH_ISSUER` only names the authorization server in the metadata clients read.
+It needs OAuth (each request must carry a verified person) and the HTTP transport, and takes no
+`HARDCHARGER_URI`: a configured connection's credentials would be shared by every user. The
+person's access token is never the broker credential: the server authenticates to the broker
+with `HARDCHARGER_MCP_BROKER_TOKEN` and presents the person's token as an RFC 8693 subject token.
+Writes need both `HARDCHARGER_ALLOW_WRITES=true` (the server-wide ceiling) and the broker's
+`allow_writes` for that person and server. Table resources are listed only for servers the
+person has already used, so a resource listing never signs in to every server they can reach.
+The protocol, for anyone writing a broker, is in
+[docs/connection-broker.md](docs/connection-broker.md).
 
 ### Container image and Helm chart
 
@@ -300,6 +335,10 @@ Only `HARDCHARGER_*` names are read.
 | `HARDCHARGER_MCP_OAUTH_ALLOW_INSECURE` | `false` | Accept `http://` issuer and public URLs (local testing only) |
 | `HARDCHARGER_MCP_SESSION_IDLE_SECONDS` | `1800` | HTTP transport with OAuth: close a user's session after this long without a request |
 | `HARDCHARGER_MCP_MAX_SESSIONS` | `200` | HTTP transport with OAuth: cap on concurrent user sessions |
+| `HARDCHARGER_MCP_BROKER_URL` | | HTTP transport with OAuth: a connection broker supplies each person's servers and sign-in tokens ([protocol](docs/connection-broker.md)); no `HARDCHARGER_URI` then |
+| `HARDCHARGER_MCP_BROKER_TOKEN` | | This server's own credential at the broker (required with the URL) |
+| `HARDCHARGER_MCP_BROKER_CACHE_SECONDS` | `60` | How long a person's server list is reused (`list_connections` always asks again) |
+| `HARDCHARGER_MCP_BROKER_ALLOW_INSECURE` | `false` | Accept a plain `http` broker URL (local testing) |
 | `HARDCHARGER_2_URI`, `HARDCHARGER_3_URI`, … | | Additional connections, see below |
 | `HARDCHARGER_CONNECTIONS` | | Comma-separated names of further connections, see below |
 
@@ -347,7 +386,8 @@ clients ask before running it.
 The guard is defense in depth; the real boundary is the privileges of the Hardcharger user the
 server signs in as. A sign-in token with `role: readonly` can only read (Hardcharger refuses
 anything else with `permission_denied`), and under Hardcharger's access control a store user's
-grants decide what each table allows.
+grants decide what each table allows. With a connection broker that user is the person asking,
+not a shared service account.
 
 - Credentials never appear in tool output, `server_info` or error messages: every message that
   reaches the client is redacted.

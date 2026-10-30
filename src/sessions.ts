@@ -5,8 +5,9 @@
 // use_schema / use_connection / USE never leak between people sharing one
 // pod. Sessions are created on first use, refreshed on every request, and
 // closed after an idle period or when the pool is full (least recently used
-// first). The credentials are still the configured service account; only the
-// session state is per user.
+// first). The credentials are the configured service account, unless a
+// connection broker supplies each user's connections and sign-in tokens
+// (broker.ts), in which case the credentials are per user too.
 
 import type { McpConfig } from "./connection.js";
 import { ConnectionRegistry } from "./registry.js";
@@ -42,6 +43,8 @@ export interface SessionStoreOptions {
   now?: () => number;
   /** Sweep period; defaults to half the idle time, at most one minute. Zero disables the timer. */
   sweepIntervalMs?: number;
+  /** Builds a new user's registry (default: one over the configured connections). */
+  createRegistry?: (log: (message: string) => void) => ConnectionRegistry;
 }
 
 export class SessionStore {
@@ -73,7 +76,8 @@ export class SessionStore {
     let entry = this.entries.get(key);
     if (!entry) {
       this.evictToFit();
-      const registry = new ConnectionRegistry(this.config, (m) => this.log(`${m} [${label}]`));
+      const userLog = (m: string) => this.log(`${m} [${label}]`);
+      const registry = this.options.createRegistry ? this.options.createRegistry(userLog) : new ConnectionRegistry(this.config, userLog);
       entry = { key, label, createdAt: new Date(t), lastUsedAt: new Date(t), registry };
       const closed = this.closedAt.get(key);
       if (closed !== undefined) {

@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { Connection } from "@gizmodata/hardcharger";
 import type { Table } from "apache-arrow";
 
+import { BrokeredRegistry } from "./broker.js";
 import { HardchargerConnection, QueryTimeoutError, errorCode, type McpConfig } from "./connection.js";
 import type { AuthenticatedUser } from "./oauth.js";
 import type { SessionInfo } from "./sessions.js";
@@ -46,6 +47,20 @@ export interface ServerContext {
 function instructions(registry: ConnectionRegistry, transport: "stdio" | "http", perUser: boolean): string {
   const multi = registry.names().length > 1;
   const scope = transport === "http" && !perUser ? " Session state (USE, use_connection) is shared by every client of this server." : "";
+  if (registry instanceof BrokeredRegistry) {
+    return (
+      "Hardcharger is GizmoData's DuckDB 2.0 server (it speaks Chargewire), so DuckDB SQL syntax and functions apply. " +
+      "The connections are the Hardcharger servers the signed-in user can reach, and every statement runs as that user: " +
+      "the server's access control (grants, row policies, masking) decides what they may see and change, so a permission " +
+      "error is an answer to report, not something to work around. Call list_connections to see them (it asks again, so " +
+      "a server created a moment ago shows up), then use_connection or the per-call connection argument. Start with " +
+      "list_catalogs / list_schemas / list_tables / describe_table to discover the schema, then use run_query for SELECT " +
+      "queries. Results are capped at a configurable number of rows; use LIMIT, aggregation, or WHERE filters to keep " +
+      "results small. Bind user-supplied literals with ? placeholders and the params argument instead of interpolating " +
+      "them into SQL. A connection accepts writes only where list_connections shows allow_writes; before running a " +
+      "write, say what it will change and get the user's confirmation."
+    );
+  }
   return (
     "Hardcharger is GizmoData's DuckDB 2.0 server (it speaks Chargewire), so DuckDB SQL syntax and functions apply. " +
     "Start with list_catalogs / list_schemas / list_tables / describe_table to discover the schema, then " +
@@ -56,7 +71,7 @@ function instructions(registry: ConnectionRegistry, transport: "stdio" | "http",
     "catalog and schema (see server_info); use use_schema or fully qualified names to work elsewhere." +
     scope +
     (multi
-      ? ` Several Hardcharger servers are configured (${registry.names().join(", ")}; current: ${registry.current()}). ` +
+      ? ` Several Hardcharger servers are configured (${registry.names().join(", ")}; current: ${registry.current() ?? "none"}). ` +
         "Every tool accepts an optional connection argument, or call use_connection to switch the default; " +
         "list_connections shows them."
       : "")
@@ -292,27 +307,44 @@ export function createServer(ctx: ServerContext): McpServer {
     {
       title: "List connections",
       description:
-        "Lists the configured Hardcharger connections (name, host, auth method, default catalog/schema) and " +
-        "which one is current. Credentials are never returned.",
+        "Lists the configured Hardcharger connections (name, host, auth method, default catalog/schema, whether " +
+        "writes are accepted) and which one is current. Credentials are never returned.",
       inputSchema: jsonSchema2020({}),
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     tool(async () => {
+      const brokered = registry instanceof BrokeredRegistry;
+      if (registry instanceof BrokeredRegistry) await registry.refresh({ force: true });
       const rows = registry.summaries();
       const md = toMarkdownTable(
-        ["name", "host", "port", "tls", "auth", "default catalog", "default schema", "current"],
+        [
+          "name",
+          ...(brokered ? ["description"] : []),
+          "host",
+          "port",
+          "tls",
+          "auth",
+          "default catalog",
+          "default schema",
+          "writes",
+          "current",
+        ],
         rows.map((r) => [
           escapeMarkdownCell(r.name),
+          ...(brokered ? [escapeMarkdownCell(r.label ?? "")] : []),
           escapeMarkdownCell(r.host),
           String(r.port),
           r.tls ? "yes" : "no",
           escapeMarkdownCell(r.auth),
           escapeMarkdownCell(r.default_catalog ?? ""),
           escapeMarkdownCell(r.default_schema ?? ""),
+          r.allow_writes ? "yes" : "no",
           r.current ? "✓" : "",
         ]),
       );
-      return text(md, { connections: rows, current: registry.current() });
+      const status = registry instanceof BrokeredRegistry ? registry.status() : undefined;
+      const body = rows.length === 0 ? (status ?? "No connections.") : status ? `${md}\n\n${status}` : md;
+      return text(body, { connections: rows, current: registry.current() });
     }),
   );
 
@@ -587,8 +619,8 @@ export function createServer(ctx: ServerContext): McpServer {
         "Runs a SQL query against Hardcharger (DuckDB dialect) and returns the rows as a Markdown table " +
         `plus structured JSON. Results are capped at max_rows (default ${config.maxRows}, hard maximum ` +
         `${config.maxRows}); long cells are truncated to ${config.maxCellChars} characters with …. ` +
-        (config.allowWrites
-          ? "Writes are enabled on this server; prefer execute_statement for DML/DDL."
+        (registry.anyAllowsWrites()
+          ? "Writes are enabled on connections whose allow_writes is true (see list_connections); prefer execute_statement for DML/DDL."
           : "This server is read-only: only SELECT/WITH/SHOW/DESCRIBE/SUMMARIZE/EXPLAIN/PRAGMA(read)/USE statements are accepted."),
       inputSchema: jsonSchema2020({
         sql: sqlArg,
@@ -610,11 +642,11 @@ export function createServer(ctx: ServerContext): McpServer {
         connection: z.string(),
         mcp_server_version: z.string(),
       }),
-      annotations: { readOnlyHint: !config.allowWrites, idempotentHint: !config.allowWrites },
+      annotations: { readOnlyHint: !registry.anyAllowsWrites(), idempotentHint: !registry.anyAllowsWrites() },
     },
     tool(async ({ sql, params, max_rows, connection: connectionName }) => {
       const connection = conn(connectionName);
-      const guarded = guardStatement(sql, config.allowWrites);
+      const guarded = guardStatement(sql, registry.allowsWrites(connection));
       const maxRows = Math.min(max_rows ?? config.maxRows, config.maxRows);
       const bound = convertParams(params);
       assertParameterCount(guarded.sql, bound);
@@ -674,7 +706,7 @@ export function createServer(ctx: ServerContext): McpServer {
     },
     tool(async ({ sql, connection: connectionName }) => {
       const connection = conn(connectionName);
-      const guarded = guardStatement(sql, config.allowWrites);
+      const guarded = guardStatement(sql, registry.allowsWrites(connection));
       const normalized = normalizeStatement(guarded.sql);
       const explainSql = /^\s*EXPLAIN\b/iu.test(normalized) ? normalized : `EXPLAIN ${normalized}`;
       const table = await connection.query(explainSql);
@@ -699,7 +731,7 @@ export function createServer(ctx: ServerContext): McpServer {
     }),
   );
 
-  if (config.allowWrites) {
+  if (registry.anyAllowsWrites()) {
     server.registerTool(
       "execute_statement",
       {
@@ -716,6 +748,9 @@ export function createServer(ctx: ServerContext): McpServer {
       },
       tool(async ({ sql, params, connection: connectionName }) => {
         const connection = conn(connectionName);
+        if (!registry.allowsWrites(connection)) {
+          throw new Error(`Connection "${connection.config.name}" does not accept writes (see list_connections).`);
+        }
         const guarded = guardStatement(sql, true);
         const bound = convertParams(params);
         assertParameterCount(guarded.sql, bound);
@@ -777,6 +812,7 @@ export function createServer(ctx: ServerContext): McpServer {
       const settings = connection.serverSettingsSnapshot();
       const info = {
         connection: cfg.name,
+        ...(cfg.label !== undefined ? { connection_label: cfg.label } : {}),
         current_connection: registry.current(),
         hardcharger_version: hardchargerVersion,
         duckdb_version: duckdbVersion,
@@ -788,7 +824,7 @@ export function createServer(ctx: ServerContext): McpServer {
         tls_skip_verify: cfg.tlsSkipVerify,
         current_catalog: currentCatalog,
         current_schema: currentSchema,
-        allow_writes: config.allowWrites,
+        allow_writes: registry.allowsWrites(connection),
         max_rows: config.maxRows,
         max_cell_chars: config.maxCellChars,
         query_timeout_seconds: config.queryTimeoutSeconds,
@@ -866,7 +902,7 @@ export function createServer(ctx: ServerContext): McpServer {
     new ResourceTemplate("hardcharger://{connection}/schema/{catalog}/{schema}/{table}", {
       list: async () => {
         const resources: Array<{ uri: string; name: string; title: string; description: string; mimeType: string }> = [];
-        for (const connection of registry.all()) {
+        for (const connection of registry.resourceConnections()) {
           if (resources.length >= 500) break;
           let tables;
           try {

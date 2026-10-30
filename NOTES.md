@@ -47,6 +47,21 @@ the Chargewire clients also against Hardcharger 2.2.0, from before the protocol'
   `UND_ERR_SOCKET`); the README example runner presents the certificate when it checks that
   server. Not investigated further.
 
+## Connection broker
+
+- A brokered connection signs in with `subjectToken` as a function: the client calls it for every
+  new sign-in (at connect, and when the server refuses its access token), so each one gets a fresh
+  token from the broker for the person whose request is being served. The token the request carried
+  is recorded on the person's registry before any tool runs.
+- Hardcharger's access token from a token exchange lasts `--token-lifetime-seconds` (86400 by
+  default), not the subject token's `exp`: with a 3 s subject token and a 600 s server lifetime, the
+  session still answered at 6 s with no new exchange (Hardcharger 2.1.2). The MCP server closes a
+  person's connection when the broker stops listing it, which bounds access through this server to
+  the list's cache period; anything else holding the exchanged token keeps it until it expires.
+- Under access control, a store user that `--token-auto-provision-users` created from a `readonly`
+  token stays read-only whatever later tokens say, until an administrator removes its
+  `provisioned_role` attribute (Hardcharger `auth.cc`).
+
 ## Browser sign-in
 
 `login_sso` runs Chargewire browser sign-in (§4.3) through `@gizmodata/hardcharger`'s
