@@ -11,8 +11,9 @@ implementation of it against a real `hardcharger-server`.
 
 ## Trust
 
-- **The MCP server** is an OAuth resource server (`HARDCHARGER_MCP_OAUTH_ISSUER`): every MCP request
-  carries the person's access token, which it verifies (issuer, audience, signature, expiry).
+- **The MCP server** is an OAuth resource server (`HARDCHARGER_MCP_OAUTH_ISSUER`, which its metadata
+  names as the authorization server): every MCP request carries the person's access token, which
+  it has the broker check (`/introspect`).
 - **The broker** authenticates the MCP server by its own credential (`HARDCHARGER_MCP_BROKER_TOKEN`,
   sent as `Authorization: Bearer`) and receives the person's access token as an
   [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693) subject token. It verifies that token itself
@@ -28,9 +29,10 @@ and asks for tokens for those.
 
 ## Requests
 
-Both are `POST` with a JSON body, under `HARDCHARGER_MCP_BROKER_URL`:
+All three are `POST` with a JSON body, under `HARDCHARGER_MCP_BROKER_URL`:
 
 ```http
+POST <broker>/introspect
 POST <broker>/connections
 POST <broker>/connections/<id>/token
 Authorization: Bearer <HARDCHARGER_MCP_BROKER_TOKEN>
@@ -41,6 +43,23 @@ Content-Type: application/json
 ```
 
 `<id>` is URL-encoded.
+
+### `POST /introspect`
+
+Whether the person's access token is active, and whose it is. In broker mode the MCP server checks
+every request's bearer token here instead of verifying it as a JWT, so providers whose access tokens
+are opaque (Clerk's, unless the instance has JWT access tokens on) work, and the MCP server needs no
+keys or credentials of the provider. An active answer is reused for 60 seconds for the same token.
+
+```json
+{"active": true, "sub": "user_2abc…", "email": "ann@example.com", "name": "Ann Example"}
+```
+
+`{"active": false}` (still HTTP 200) for a token the broker doesn't accept: the MCP server answers
+401 and the client signs the person in again. Any error status means the broker couldn't say: the
+MCP server answers 503, not 401, so a broker outage doesn't send everyone back to sign in. Answer
+active for any valid sign-in, even one that may reach nothing: the connection list explains that
+better than a sign-in loop does.
 
 ### `POST /connections`
 

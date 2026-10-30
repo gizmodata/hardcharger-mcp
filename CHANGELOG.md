@@ -14,10 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signed-in person may reach and mints them short-lived sign-in tokens, which the client exchanges
   (token_exchange). Every statement runs as that person, under the server's grants, row policies and
   masking. The person's token is presented to the broker as an RFC 8693 subject token, never as its
-  credential. Writes need the broker's per-server `allow_writes` as well as `HARDCHARGER_ALLOW_WRITES`.
+  credential. The broker also checks each request's access token (`/introspect`, answers reused for 60 s), so
+  opaque access tokens such as Clerk's work and this server needs no provider keys; a broker outage answers 503,
+  not 401. Writes need the broker's per-server `allow_writes` as well as `HARDCHARGER_ALLOW_WRITES`.
   Protocol: `docs/connection-broker.md`.
 - `list_connections` and `server_info` report whether each connection accepts writes
   (`allow_writes`), and a brokered connection's description.
+
+### Fixed
+- The README said Clerk issues JWT access tokens by default; it issues opaque ones unless the instance turns JWT
+  access tokens on.
 
 ## [2.1.0] - 2026-10-29
 

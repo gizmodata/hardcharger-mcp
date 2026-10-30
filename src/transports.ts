@@ -6,7 +6,7 @@ import * as http from "node:http";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
-import { BrokerClient, BrokeredRegistry } from "./broker.js";
+import { BrokerClient, BrokerError, BrokeredRegistry } from "./broker.js";
 import { ConfigError, redactSecrets, type McpConfig } from "./connection.js";
 import { OAuthError, OAuthVerifier, OFFLINE_ACCESS_SCOPE, protectedResourceMetadataPaths, type AuthenticatedUser } from "./oauth.js";
 import { OAuthFacade, facadeMetadataPaths, facadeTokenPath } from "./oauth-facade.js";
@@ -154,11 +154,14 @@ function sessionKey(issuer: string, user: AuthenticatedUser): string {
 export async function startHttp(config: McpConfig, options: HttpOptions): Promise<http.Server> {
   const bearer = config.mcpBearerToken;
   const oauth = config.mcpOAuth;
-  const verifier = options.verifier ?? (oauth ? new OAuthVerifier(oauth, { log }) : undefined);
+  const broker = config.broker ? (options.broker ?? new BrokerClient(config.broker)) : undefined;
+  // With a broker, the broker checks each access token (opaque ones too): this server needs no provider keys.
+  const verifier =
+    options.verifier ??
+    (oauth ? new OAuthVerifier(oauth, { log, introspect: broker ? (t) => broker.introspect(t) : undefined }) : undefined);
   if (config.broker && !verifier) {
     throw new ConfigError("HARDCHARGER_MCP_BROKER_URL needs OAuth (HARDCHARGER_MCP_OAUTH_ISSUER): credentials are issued per signed-in user.");
   }
-  const broker = config.broker ? (options.broker ?? new BrokerClient(config.broker)) : undefined;
   // Per-user sessions need an identity, so they exist only with OAuth.
   const sessions = verifier
     ? new SessionStore(config, {
@@ -246,8 +249,10 @@ export async function startHttp(config: McpConfig, options: HttpOptions): Promis
       auth = await authorize(req);
     } catch (err) {
       log(`[hardcharger-mcp] auth error: ${redact(err instanceof Error ? err.message : String(err))}`);
-      res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "internal error" }));
+      // The broker couldn't say (down, slow): not the caller's token, so no 401 that would send them to sign in again.
+      const unavailable = err instanceof BrokerError;
+      res.writeHead(unavailable ? 503 : 500, { "content-type": "application/json", ...(unavailable ? { "retry-after": "10" } : {}) });
+      res.end(JSON.stringify(unavailable ? { error: "temporarily_unavailable", error_description: err.message } : { error: "internal error" }));
       return;
     }
     if (!auth.ok) {
@@ -330,7 +335,7 @@ export async function startHttp(config: McpConfig, options: HttpOptions): Promis
   const addr = httpServer.address();
   const shown = typeof addr === "object" && addr ? `${addr.address}:${addr.port}` : `${options.host}:${options.port}`;
   const authMode = verifier
-    ? `oauth ${verifier.config.issuer}${facade ? ` via token proxy ${facade.issuer}` : ""}, per-user sessions (idle ${config.mcpSessionIdleSeconds}s, max ${config.mcpMaxSessions})`
+    ? `oauth ${verifier.config.issuer}${facade ? ` via token proxy ${facade.issuer}` : ""}${verifier.introspects ? " (tokens checked by the broker)" : ""}, per-user sessions (idle ${config.mcpSessionIdleSeconds}s, max ${config.mcpMaxSessions})`
     : bearer
       ? "bearer"
       : "none";

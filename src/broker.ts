@@ -20,6 +20,7 @@ import {
   type TokenSource,
   parseHardchargerUri,
 } from "./connection.js";
+import type { IntrospectionResult } from "./oauth.js";
 import { ConnectionRegistry } from "./registry.js";
 
 /** RFC 8693 token type of the caller's OAuth access token. */
@@ -45,6 +46,13 @@ const listSchema = z.object({
   connections: z.array(z.unknown()),
   /** Shown to the caller when the list is empty (e.g. how to create a server). */
   message: z.string().nullish(),
+});
+
+const introspectionSchema = z.object({
+  active: z.boolean(),
+  sub: z.string().nullish(),
+  email: z.string().nullish(),
+  name: z.string().nullish(),
 });
 
 const tokenSchema = z.object({
@@ -98,6 +106,17 @@ export class BrokerClient {
     const body = listSchema.safeParse(await this.post("/connections", subjectToken));
     if (!body.success) throw new BrokerError("The connection broker answered the connection list with an unexpected body.");
     return { connections: body.data.connections, message: body.data.message ?? undefined };
+  }
+
+  /**
+   * Whether the caller's access token is active, and whose it is: the broker verifies the tokens of
+   * the provider it trusts, opaque ones included, so this server needs no provider credentials.
+   */
+  async introspect(subjectToken: string): Promise<IntrospectionResult> {
+    const body = introspectionSchema.safeParse(await this.post("/introspect", subjectToken));
+    if (!body.success) throw new BrokerError("The connection broker answered the token check with an unexpected body.");
+    const { active, sub, email, name } = body.data;
+    return { active, sub: sub ?? undefined, email: email ?? undefined, name: name ?? undefined };
   }
 
   /** A sign-in token for the caller on one server, and its lifetime in seconds. */

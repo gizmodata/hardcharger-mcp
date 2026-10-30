@@ -2,10 +2,10 @@
 //
 // A real hardcharger-server runs with access control (a DuckDB-file store), trusts sign-in tokens
 // signed by a throwaway key, and provisions a store user on a trusted token's first sign-in. A
-// fake broker plays the control plane: it accepts only this MCP server's credential, verifies
-// each caller's OAuth access token (from a throwaway OpenID Connect issuer), decides which
-// servers that person may reach, and mints their sign-in tokens. The MCP server runs in-process
-// (startHttp) with no Hardcharger credentials of its own.
+// fake broker plays the control plane: it accepts only this MCP server's credential, checks each
+// caller's OAuth access token (opaque, as Clerk's are: only the broker can say whose it is, through
+// /introspect), decides which servers that person may reach, and mints their sign-in tokens. The
+// MCP server runs in-process (startHttp) with no Hardcharger or identity-provider credentials.
 
 import assert from "node:assert/strict";
 import * as http from "node:http";
@@ -16,7 +16,9 @@ import { after, before, describe, it } from "node:test";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { SignJWT, createRemoteJWKSet, exportSPKI, generateKeyPair, jwtVerify } from "jose";
+import { randomBytes } from "node:crypto";
+
+import { SignJWT, exportSPKI, generateKeyPair } from "jose";
 
 import { parseConfig } from "../../dist/connection.js";
 import { startHttp } from "../../dist/transports.js";
@@ -53,9 +55,14 @@ describe("connection broker: per-person identity", () => {
   const mints = new Map<string, number>();
   /** Every request the broker refused, with why. */
   const refusals: string[] = [];
+  /** Opaque access tokens the "provider" issued, and whose they are. */
+  const accessTokens = new Map<string, string>();
+  /** Introspections the broker answered. */
+  let introspections = 0;
+  /** When set, the broker answers every request with this status (an outage). */
+  let outage: number | undefined;
 
   async function startBroker(): Promise<void> {
-    const jwks = createRemoteJWKSet(new URL(idp.jwksUri));
     brokerServer = http.createServer(async (req, res) => {
       const reply = (status: number, body: unknown) => {
         res.writeHead(status, { "content-type": "application/json" });
@@ -63,21 +70,24 @@ describe("connection broker: per-person identity", () => {
       };
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(chunk as Buffer);
+      if (outage !== undefined) return reply(outage, { detail: "down for maintenance" });
       if (req.headers.authorization !== `Bearer ${BROKER_CREDENTIAL}`) {
         refusals.push("credential");
         return reply(401, { detail: "unknown MCP server" });
       }
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { subject_token?: string };
-      let email: string;
-      try {
-        const { payload } = await jwtVerify(body.subject_token ?? "", jwks, { issuer: idp.issuer, audience: AUDIENCE });
-        email = String(payload.email);
-      } catch {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const owner = accessTokens.get(body.subject_token ?? "");
+      if (req.method === "POST" && url.pathname === "/broker/introspect") {
+        introspections++;
+        return reply(200, owner ? { active: true, sub: `sub-${owner}`, email: owner } : { active: false });
+      }
+      if (owner === undefined) {
         refusals.push("subject token");
         return reply(401, { detail: "Your sign-in is not valid; reconnect." });
       }
+      const email = owner;
       const grant = access.get(email) ?? { servers: {} };
-      const url = new URL(req.url ?? "/", "http://localhost");
       if (req.method === "POST" && url.pathname === "/broker/connections") {
         return reply(200, {
           connections: Object.entries(grant.servers).map(([name, allowWrites]) => ({
@@ -115,9 +125,10 @@ describe("connection broker: per-person identity", () => {
     brokerUrl = `http://127.0.0.1:${(brokerServer.address() as { port: number }).port}/broker`;
   }
 
-  /** An MCP client signed in as `email` (an OAuth access token from the throwaway issuer). */
+  /** An MCP client signed in as `email`, with an opaque access token only the broker can read. */
   async function connectAs(email: string): Promise<Client> {
-    const token = await idp.token({ sub: `sub-${email}`, email }, { audience: AUDIENCE, expiresIn: "10m" });
+    const token = `oat_${randomBytes(16).toString("hex")}`;
+    accessTokens.set(token, email);
     const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
       requestInit: { headers: { authorization: `Bearer ${token}` } },
     });
@@ -319,6 +330,38 @@ describe("connection broker: per-person identity", () => {
     assert.ok((mints.get("ivan@example.com") ?? 0) > before, `minted ${mints.get("ivan@example.com")} after ${before}`);
   });
 
+  it("checks opaque access tokens with the broker, never the provider's keys, and reuses an answer briefly", async () => {
+    access.set("kim@example.com", { servers: { analytics: false } });
+    const before = introspections;
+    const kim = await connectAs("kim@example.com");
+    await ok(kim, "list_connections");
+    await ok(kim, "list_connections");
+    assert.equal(introspections - before, 1, "one introspection for a burst of requests");
+    assert.equal(idp.discoveryHits, 0, "no JWKS discovery in broker mode");
+
+    const post = (token: string) =>
+      fetch(mcpUrl, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+    const unknown = await post("oat_not-issued-by-anyone");
+    assert.equal(unknown.status, 401);
+    assert.match(unknown.headers.get("www-authenticate") ?? "", /error="invalid_token"/u);
+
+    // The broker is down: the caller's token isn't the problem, so no 401 that would send them to sign in again.
+    const fresh = `oat_${randomBytes(16).toString("hex")}`;
+    accessTokens.set(fresh, "kim@example.com");
+    outage = 503;
+    try {
+      const down = await post(fresh);
+      assert.equal(down.status, 503);
+      assert.equal(down.headers.get("www-authenticate"), null);
+    } finally {
+      outage = undefined;
+    }
+  });
+
   it("never shows a caller a token in an answer", async () => {
     access.set("judy@example.com", { servers: { analytics: false } });
     const judy = await connectAs("judy@example.com");
@@ -327,6 +370,9 @@ describe("connection broker: per-person identity", () => {
       const shown = JSON.stringify(r);
       assert.doesNotMatch(shown, /eyJ[A-Za-z0-9_-]{10,}\./u, "no JWT in a tool result");
       assert.ok(!shown.includes(BROKER_CREDENTIAL));
+      for (const [token, owner] of accessTokens) {
+        if (owner === "judy@example.com") assert.ok(!shown.includes(token), "no access token in a tool result");
+      }
     }
   });
 });

@@ -238,8 +238,10 @@ connector enters the app registration's client ID and secret under *Advanced set
 `https://claude.ai/api/mcp/auth_callback`, *Expose an API* with the MCP URL as Application ID URI
 and a scope such as `access_as_user`, `requestedAccessTokenVersion` 2; v2 tokens carry the client ID
 as `aud`). **Okta** needs a custom authorization server; **Auth0** an API with the audience;
-**Keycloak** works out of the box; **Clerk** issues JWT access tokens by default. Providers with
-opaque access tokens (Google) are not supported in this mode.
+**Keycloak** works out of the box; **Clerk** issues opaque access tokens unless the instance has
+*JWT access tokens* turned on (checked 2026-10-30), so turn that on for this mode. Providers with
+opaque access tokens (Google) are not supported in this mode; with a connection broker they are,
+because the broker checks the tokens.
 
 **Static bearer token.** For a quick shared secret instead of OAuth, set
 `HARDCHARGER_MCP_BEARER_TOKEN`; every request must then send `Authorization: Bearer <token>`. The
@@ -273,6 +275,9 @@ HARDCHARGER_ALLOW_WRITES=true \
 npx -y @gizmodata/hardcharger-mcp --transport http --host 0.0.0.0 --port 3000
 ```
 
+The broker also checks each request's access token (`/introspect`), so the provider's tokens may be
+opaque (Clerk's are by default) and this server needs none of the provider's keys or credentials;
+`HARDCHARGER_MCP_OAUTH_ISSUER` only names the authorization server in the metadata clients read.
 It needs OAuth (each request must carry a verified person) and the HTTP transport, and takes no
 `HARDCHARGER_URI`: a configured connection's credentials would be shared by every user. The
 person's access token is never the broker credential: the server authenticates to the broker

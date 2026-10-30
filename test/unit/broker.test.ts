@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import { ACCESS_TOKEN_TYPE, BrokerClient, BrokerError, BrokeredRegistry } from "../../dist/broker.js";
 import { ConfigError, parseConfig } from "../../dist/connection.js";
+import { INTROSPECTION_CACHE_MS, OAuthError, OAuthVerifier } from "../../dist/oauth.js";
 import { NoConnectionsError } from "../../dist/registry.js";
 import { startStdio } from "../../dist/transports.js";
 
@@ -351,5 +352,53 @@ describe("BrokeredRegistry", () => {
     const { r } = registry(() => ({ body: { connections: [cluster(), cluster({ id: "c-2", name: "ops" })] } }));
     await r.refresh();
     assert.deepEqual(r.resourceConnections(), []);
+  });
+});
+
+describe("token checks by the broker (opaque access tokens)", () => {
+  const oauth = parseConfig({ ...OAUTH, ...BROKER }).mcpOAuth!;
+
+  function verifier(answer: (token: string) => { active: boolean; sub?: string; email?: string }, emails: string[] = []) {
+    const calls: string[] = [];
+    let now = 1_000_000;
+    const v = new OAuthVerifier(
+      { ...oauth, authorizedEmails: emails },
+      { introspect: async (t) => (calls.push(t), answer(t)), now: () => now },
+    );
+    return { v, calls, tick: (ms: number) => (now += ms) };
+  }
+
+  it("asks the broker, and reuses an active answer briefly", async () => {
+    const { v, calls, tick } = verifier(() => ({ active: true, sub: "user_1", email: "ann@example.com" }));
+    const user = await v.verify("Bearer oat_abc");
+    assert.equal(user.subject, "user_1");
+    assert.equal(user.email, "ann@example.com");
+    await v.verify("Bearer oat_abc");
+    assert.equal(calls.length, 1);
+    tick(INTROSPECTION_CACHE_MS + 1);
+    await v.verify("Bearer oat_abc");
+    assert.equal(calls.length, 2);
+  });
+
+  it("refuses an inactive token, and asks again next time", async () => {
+    const { v, calls } = verifier(() => ({ active: false }));
+    for (let i = 0; i < 2; i++) {
+      await assert.rejects(v.verify("Bearer oat_dead"), (e: unknown) => e instanceof OAuthError && e.status === 401);
+    }
+    assert.equal(calls.length, 2);
+  });
+
+  it("still applies the email allowlist", async () => {
+    const { v } = verifier(() => ({ active: true, sub: "u", email: "eve@elsewhere.org" }), ["*@example.com"]);
+    await assert.rejects(v.verify("Bearer oat_x"), (e: unknown) => e instanceof OAuthError && e.status === 403);
+  });
+
+  it("BrokerClient.introspect posts the token as a subject token and reads the answer", async () => {
+    const { seen, fetchImpl } = fakeBroker(() => ({ body: { active: true, sub: "user_1", email: "ann@example.com", name: null } }));
+    const r = await new BrokerClient(parseConfig({ ...OAUTH, ...BROKER }).broker!, { fetch: fetchImpl }).introspect("oat_abc");
+    assert.deepEqual(r, { active: true, sub: "user_1", email: "ann@example.com", name: undefined });
+    assert.equal(seen[0].url, "https://broker.test.invalid/mcp-broker/introspect");
+    assert.equal(seen[0].authorization, "Bearer broker-credential-of-this-server");
+    assert.equal(seen[0].body.subject_token, "oat_abc");
   });
 });
