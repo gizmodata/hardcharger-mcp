@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-11-04
+
+### Changed
+- Built on `@gizmodata/hardcharger` 2.1.1 and `@gizmodata/chargewire` 2.1.0 (the dependency range is
+  now `^2.1.1`). A query that returns no rows with a LIST column no longer fails when the client
+  sets its unread result aside ([gizmodata/hardcharger#23](https://github.com/gizmodata/hardcharger/issues/23)),
+  and a session Hardcharger 2.7.0 ends for an idle transaction is replaced by the client.
+- `server_info` reports the server's `hardcharger.idle_in_transaction_session_timeout` among its settings.
+
+### Fixed
+- With writes enabled, a statement that found its transaction ended for sitting idle past the server's
+  `idle_in_transaction_session_timeout` (`session_ended`, reason `idle_in_transaction`, Hardcharger
+  2.7.0) was retried on a new connection, where it ran in autocommit and committed on its own while
+  the transaction's earlier statements had been rolled back. It now fails with that error and is not
+  retried; the next statement runs on the new session. A live test covers it, beside a busy
+  transaction that commits.
+
 ## [2.2.0] - 2026-10-30
 
 ### Added

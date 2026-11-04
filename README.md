@@ -38,8 +38,8 @@ runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: 2.2.0, with Hardcharger 2.3.0.** Built on `@gizmodata/hardcharger` 2.1.0 (hardcharger-js
-> `1a524f6`, on `@gizmodata/chargewire` 2.0.0, chargewire-js `1ea10dd`, Chargewire protocol 1.0.0);
+> **Status: 2.2.1, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.1.1 (hardcharger-js
+> `3849b40`, on `@gizmodata/chargewire` 2.1.0, chargewire-js `8a4ed78`, Chargewire protocol 1.0.0);
 > tested against the image of Hardcharger's main branch and against Hardcharger 2.2.0, released
 > before the protocol was renamed to Chargewire.
 
@@ -402,7 +402,11 @@ not a shared service account.
   session are gone. A session an administrator killed, a closed connection or a transport failure
   reopens the connection once and retries (`reconnects`); a refused credential is never retried,
   and neither is a session ended because the sign-in was withdrawn (`token_revoked`,
-  `credentials_changed`, `principal_dropped`).
+  `credentials_changed`, `principal_dropped`). With writes enabled, a transaction (`BEGIN` through
+  `execute_statement`) left idle past the server's `idle_in_transaction_session_timeout`
+  (Hardcharger 2.7.0) is rolled back by the server: the next statement fails with
+  `session_ended` and `idle_in_transaction` and is not retried, so it can't commit on its own
+  outside the transaction, and the statement after it runs on a new session in autocommit.
 - The server has no tools that touch the local filesystem or any network endpoint other than the
   configured Hardcharger servers (and, for `login_sso`, the server's sign-in routes and your
   identity provider in your browser).
@@ -444,7 +448,7 @@ built from [gizmodata/hardcharger-js](https://github.com/gizmodata/hardcharger-j
 [scripts/hardcharger-js.commit](scripts/hardcharger-js.commit) and
 [scripts/chargewire-js.commit](scripts/chargewire-js.commit), and packed to `.clients/`, where
 `package-lock.json` finds them, so the tests run against those exact clients. `package.json`, and
-so the published package, names the npm package and its range (`^2.1.0`); the tarballs are a
+so the published package, names the npm package and its range (`^2.1.1`); the tarballs are a
 stand-in for development and CI only (`scripts/check-lock.mjs` checks both).
 
 ```bash
