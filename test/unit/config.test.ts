@@ -343,6 +343,10 @@ describe("isConnectionLost", () => {
     assert.equal(isConnectionLost(hcError("session_ended", { reason: "some_later_reason" })), true);
   });
 
+  it("never retries a statement whose session was ended for an idle transaction (the client replaced it)", () => {
+    assert.equal(isConnectionLost(hcError("session_ended", { reason: "idle_in_transaction" })), false);
+  });
+
   it("never reopens a session ended because the sign-in was withdrawn (Chargewire 4.2, 5.6)", () => {
     for (const reason of ["token_revoked", "credentials_changed", "principal_dropped"]) {
       assert.equal(isConnectionLost(hcError("session_ended", { reason })), false, reason);

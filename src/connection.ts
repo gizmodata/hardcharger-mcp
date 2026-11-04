@@ -537,6 +537,15 @@ export function errorCode(err: unknown): string | undefined {
 const SIGN_IN_WITHDRAWN = new Set(["token_revoked", "credentials_changed", "principal_dropped"]);
 
 /**
+ * The `session_ended` reason for a session the server ended because its transaction sat idle
+ * past its `idle_in_transaction_session_timeout` (Chargewire 2.1.0, Hardcharger 2.7.0). The
+ * client has already replaced the session (`@gizmodata/chargewire` 2.1.0) and fails the
+ * statement that found it ended, which must never run again: on a new session, in autocommit,
+ * it would commit on its own while the transaction's earlier statements had been rolled back.
+ */
+const IDLE_IN_TRANSACTION = "idle_in_transaction";
+
+/**
  * Does this error mean the connection (or the server's session behind it) is gone in a
  * way that a fresh connection with the same credentials cures? The client itself already
  * replaces a session the server lost (`session_not_found`, an expired token) and replays
@@ -545,11 +554,15 @@ const SIGN_IN_WITHDRAWN = new Set(["token_revoked", "credentials_changed", "prin
  * this server doesn't know), a closed connection, a transport failure, and a lost session
  * the client could not replace. A refused credential is never retried, and neither is a
  * session ended because the sign-in was withdrawn (`token_revoked`, `credentials_changed`,
- * `principal_dropped`).
+ * `principal_dropped`), nor one ended for an idle transaction (`idle_in_transaction`: the
+ * client replaced that session itself, and the failed statement must not run again).
  */
 export function isConnectionLost(err: unknown): boolean {
   const code = errorCode(err);
-  if (code === HardchargerErrorCode.sessionEnded) return !SIGN_IN_WITHDRAWN.has(String((err as HardchargerError).reason ?? ""));
+  if (code === HardchargerErrorCode.sessionEnded) {
+    const reason = String((err as HardchargerError).reason ?? "");
+    return reason !== IDLE_IN_TRANSACTION && !SIGN_IN_WITHDRAWN.has(reason);
+  }
   return (
     code === HardchargerErrorCode.sessionNotFound ||
     code === HardchargerErrorCode.clientConnectionClosed ||
@@ -596,6 +609,7 @@ export const SERVER_SETTINGS_OF_INTEREST = [
   "hardcharger.read_only",
   "hardcharger.max_sessions",
   "hardcharger.session_idle_timeout",
+  "hardcharger.idle_in_transaction_session_timeout",
   "hardcharger.query_timeout",
   "hardcharger.memory_limit",
   "hardcharger.max_concurrent_statements",

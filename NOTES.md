@@ -27,6 +27,13 @@ the Chargewire clients also against Hardcharger 2.2.0, from before the protocol'
   `credentials_changed` or `principal_dropped`, Chargewire §4.2 and §5.6) is never reopened: the
   error, with its reason, is the answer. An expired token, no reason or a reason this version
   doesn't know reopens as `killed` does.
+- A session ended because its transaction sat idle past the server's
+  `idle_in_transaction_session_timeout` (reason `idle_in_transaction`, Hardcharger 2.7.0) is
+  replaced by the client itself (`@gizmodata/chargewire` 2.1.0), which fails the statement that
+  found it ended. That statement is never retried here: on the new session, in autocommit, it would
+  commit on its own while the transaction's earlier statements had been rolled back (before 2.2.1
+  this layer reconnected and re-ran it, and it committed). The error is the answer; the next
+  statement runs on the new session.
 - `hardcharger_sessions()` reports a UUID per session, not the Chargewire session id the client
   sees; `KILL SESSION` takes the former (`HARDCHARGER_CURRENT_SESSION()`).
 - Timeouts: `statementTimeoutMs` (§6.9) per statement; the server cancels and answers
