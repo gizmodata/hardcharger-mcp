@@ -23,8 +23,9 @@ serviceAccount:
 # Non-secret settings, written to a ConfigMap and exposed as environment
 # variables. Any HARDCHARGER_* variable from the README works here.
 config:
-  # The Hardcharger server: hardcharger://host[:port] (TLS to 31337 unless the
-  # URI says ?tls=false).
+  # The Hardcharger server: hardcharger://host[:port] (TLS to 31337, or 443 for
+  # a GizmoData Cloud host such as my-cluster.gizmodata.com, unless the URI names
+  # a port; plain HTTP with ?tls=false).
   HARDCHARGER_URI: ""
   # HARDCHARGER_DEFAULT_CATALOG: ""
   # HARDCHARGER_DEFAULT_SCHEMA: ""

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-05
+
+### Added
+- A `hardcharger://` URI with no port and a GizmoData Cloud host (`gizmodata.com` or a name under it,
+  in any case, a trailing dot allowed) connects to port 443, where GizmoData Cloud clusters answer,
+  instead of 31337 (from `@gizmodata/hardcharger` 2.3.0). Look-alikes such as `evilgizmodata.com` and
+  `gizmodata.com.example.org` keep 31337, and an explicit port always wins. The README, the Claude
+  Desktop extension's URI help and the Helm values say so.
+
+### Fixed
+- After SQL that changes the session's settings (a statement whose first word is `SET`, `RESET` or
+  `PRAGMA`), a lost connection is no longer reopened and the call retried: the new session doesn't
+  have the settings, so the statement ran with others, without an error. The call now fails with an
+  error that says the settings are gone and the statement did not run again (`SettingsLostError`);
+  the next call runs on a new session. With `@gizmodata/chargewire` 2.2.1 the client refuses the same
+  re-run on a session it replaced itself (an idle eviction), where this layer never saw an error.
+- A `USE` through `run_query` pinned the catalog and schema it read from the session document, which
+  a server before Chargewire 2.2.1 (Hardcharger 2.7.0) can answer before it has recorded the USE, so
+  the pin could set the old schema back. They are now read from the engine (`current_database()`,
+  `current_schema()`); `use_schema` takes them from the answer to its own options request.
+
+### Changed
+- Built on `@gizmodata/hardcharger` 2.3.0 and `@gizmodata/chargewire` 2.2.1 (the dependency range is
+  now `^2.3.0`).
+
 ## [2.3.0] - 2026-11-05
 
 ### Added

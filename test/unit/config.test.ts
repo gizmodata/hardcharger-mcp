@@ -31,6 +31,20 @@ const hcError = (code: string, extra: Record<string, unknown> = {}) =>
 describe("parseConfig", () => {
   const first = (env: Record<string, string>) => parseConfig(env).connections[0];
 
+  it("a GizmoData Cloud host without a port is port 443; an explicit port wins; look-alikes keep 31337", () => {
+    for (const [uri, port] of [
+      ["hardcharger://my-cluster.us-east-1.aws.gizmodata.com", 443],
+      ["hardcharger://GizmoData.com.", 443],
+      ["hardcharger://my-cluster.gizmodata.com:31337", 31337],
+      ["hardcharger://evilgizmodata.com", 31337],
+      ["hardcharger://gizmodata.com.example.org", 31337],
+    ] as const) {
+      const c = first({ ...base, HARDCHARGER_URI: uri });
+      assert.equal(c.port, port, uri);
+      assert.equal(c.tls, true, uri);
+    }
+  });
+
   it("applies defaults: TLS to port 31337", () => {
     const cfg = parseConfig({ ...base });
     const c = cfg.connections[0];

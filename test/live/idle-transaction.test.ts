@@ -110,4 +110,23 @@ describe("a transaction left idle (session_ended, idle_in_transaction)", () => {
     await ok(rw, "execute_statement", { sql: `INSERT INTO ${name} VALUES (3)` });
     assert.equal(await count(name), 1n);
   });
+
+  it("a session killed after SET is not reopened and retried: the next statement would run without the setting", async () => {
+    await ok(rw, "execute_statement", { sql: "SET VARIABLE mcp_marker = 'set_here'" });
+    assert.equal((await ok<{ rows: string[][] }>(rw, "run_query", { sql: "SELECT coalesce(getvariable('mcp_marker'), 'unset')::VARCHAR AS t" })).rows[0]![0], "set_here");
+    const sid = (await ok<{ rows: string[][] }>(rw, "run_query", { sql: "SELECT HARDCHARGER_CURRENT_SESSION() AS s" })).rows[0]![0]!;
+    const before = (await ok<{ reconnects: number }>(rw, "server_info")).reconnects;
+    const admin = await adminConnection(server);
+    try {
+      await admin.execute(`KILL SESSION '${sid}'`);
+    } finally {
+      await admin.close();
+    }
+    const text = await failsWith(rw, "run_query", { sql: "SELECT coalesce(getvariable('mcp_marker'), 'unset')::VARCHAR AS t" }, /not run again/u);
+    assert.match(text, /SET, RESET or PRAGMA/u);
+    assert.equal((await ok<{ reconnects: number }>(rw, "server_info")).reconnects, before, "no reconnect and retry");
+    // The next call runs on a new session, which has the server's own setting again.
+    const now = (await ok<{ rows: string[][] }>(rw, "run_query", { sql: "SELECT coalesce(getvariable('mcp_marker'), 'unset')::VARCHAR AS t" })).rows[0]![0];
+    assert.notEqual(now, "set_here");
+  });
 });

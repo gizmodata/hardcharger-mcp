@@ -17,6 +17,7 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
   type RunningServer,
   adminConnection,
+  failsWith,
   launchServer,
   ok,
   passwordSettings,
@@ -96,6 +97,22 @@ describe("lost sessions", () => {
     await ok(client, "run_query", { sql: "USE memory.mcp_ver" });
     await sleep(PAST_IDLE_MS);
     assert.equal(await schemaSeenBy(client), "mcp_ver", "USE survived eviction");
+  });
+
+  it("after SET, an evicted session's next statement fails instead of running without the setting", async () => {
+    const client = await stdioClient({ ...passwordSettings(server), HARDCHARGER_ALLOW_WRITES: "true" }, stderr);
+    clients.push(client);
+    const setting = async (): Promise<string> =>
+      (await ok<{ rows: string[][] }>(client, "run_query", { sql: "SELECT coalesce(getvariable('mcp_marker'), 'unset')::VARCHAR AS v" })).rows[0]![0]!;
+    await ok(client, "execute_statement", { sql: "SET VARIABLE mcp_marker = 'set_here'" });
+    assert.equal(await setting(), "set_here");
+    await sleep(PAST_IDLE_MS);
+    const text = await failsWith(client, "run_query", { sql: "SELECT coalesce(getvariable('mcp_marker'), 'unset')::VARCHAR AS v" }, /not run again/u);
+    assert.match(text, /SET, RESET or PRAGMA/u);
+    // The client opened the replacement: the next call runs there, with the server's own setting.
+    assert.notEqual(await setting(), "set_here");
+    const counters = await ok<Counters>(client, "server_info");
+    assert.equal(counters.reconnects, 0, "not reopened and retried by this layer");
   });
 
   it("a session an administrator killed (session_ended) is reopened once, transparently", async () => {

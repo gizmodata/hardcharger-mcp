@@ -38,8 +38,8 @@ runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: 2.3.0, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.2.0 (hardcharger-js
-> `d790324`, on `@gizmodata/chargewire` 2.2.0, chargewire-js `5380630`, Chargewire protocol 1.0.0);
+> **Status: 2.4.0, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.3.0 (hardcharger-js
+> `7a91507`, on `@gizmodata/chargewire` 2.2.1, chargewire-js `56df77e`, Chargewire protocol 1.0.0);
 > tested against the image of Hardcharger's main branch and against Hardcharger 2.2.0, released
 > before the protocol was renamed to Chargewire.
 
@@ -308,7 +308,7 @@ Only `HARDCHARGER_*` names are read.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `HARDCHARGER_URI` | required | `hardcharger://host[:port][/prefix][?tls=false]`: TLS to port 31337 unless the URI says otherwise |
+| `HARDCHARGER_URI` | required | `hardcharger://host[:port][/prefix][?tls=false]`: TLS to port 31337 unless the URI says otherwise; a GizmoData Cloud host (`gizmodata.com` or a name under it, such as `my-cluster.us-east-1.aws.gizmodata.com`) defaults to 443 instead |
 | `HARDCHARGER_CONNECTION_NAME` | `default` | Name of this connection (used with the `connection` tool argument) |
 | `HARDCHARGER_USERNAME` / `HARDCHARGER_PASSWORD` | | Password sign-in |
 | `HARDCHARGER_TOKEN` | | A signed sign-in token (the `token_exchange` grant) |
