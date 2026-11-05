@@ -35,7 +35,10 @@ export interface TokenSource {
 export interface ConnectionConfig {
   /** Unique, case-insensitive name used in tool arguments (e.g. "default", "prod"). */
   name: string;
-  /** `hardcharger://host[:port][/prefix][?tls=false]` (TLS unless `?tls=false`, port 31337 by default). */
+  /**
+   * `hardcharger://host[:port][/prefix][?tls=false]` (TLS unless `?tls=false`; port 31337 by
+   * default, 443 for a GizmoData Cloud host).
+   */
   uri: string;
   /** Host and TLS of `uri`, as the client reads it. */
   host: string;
@@ -335,7 +338,8 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): McpConfig {
   if (connections.length === 0 && broker === undefined) {
     throw new ConfigError(
       "HARDCHARGER_URI is required: the Hardcharger server's URI, e.g. hardcharger://db.example.com " +
-        "(TLS to port 31337), or hardcharger://localhost?tls=false for a server without TLS.",
+        "(TLS to port 31337; 443 for a GizmoData Cloud host such as my-cluster.gizmodata.com), or " +
+        "hardcharger://localhost?tls=false for a server without TLS.",
     );
   }
   const seen = new Map<string, string>();
@@ -559,6 +563,35 @@ export class TransactionLostError extends Error {
 }
 
 /**
+ * The connection lost its session after SQL changed the session's settings (`SET`, `RESET`,
+ * `PRAGMA`): a new session does not have them, so the statement was not run again there.
+ */
+export class SettingsLostError extends Error {
+  constructor(name: string, cause: unknown) {
+    super(
+      `The connection "${name}" lost its Hardcharger session (${errorCode(cause) ?? "connection lost"}) after SQL ` +
+        "that changes the session's settings (SET, RESET or PRAGMA) ran on it. A new session does not have those " +
+        "settings, so this statement was not run again: run the SET again, then the statement. The connection is usable.",
+      { cause },
+    );
+    this.name = "SettingsLostError";
+  }
+}
+
+/**
+ * Whether `sql` changes session settings a new session would not have: a statement whose first
+ * word is `SET`, `RESET` or `PRAGMA` (comments skipped; every part after a `;` too, so a `;` in a
+ * literal only makes it suspect more). `USE` is not one: run_query pins its catalog and schema as
+ * session options, which a new session gets. `UPDATE t SET ...` is not one either.
+ */
+export function changesSettings(sql: string): boolean {
+  return sql.split(";").some((part) => {
+    const head = part.replace(/^(?:\s+|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/u, "");
+    return /^(?:set|reset|pragma)\b/iu.test(head);
+  });
+}
+
+/**
  * Whether `sql` may open a transaction that outlives the statement (the Chargewire client's own
  * test): a word search that may suspect a transaction where there is none, never the reverse.
  */
@@ -713,6 +746,8 @@ export class HardchargerConnection {
   private readonly openClient: NonNullable<ConnectionHooks["connect"]>;
   /** SQL that can begin a transaction ran on the current client's session (mayOpenTransaction). */
   private mayHoldTransaction = false;
+  /** SQL that changes session settings ran on the current client's session (changesSettings). */
+  private mayHoldSettings = false;
   /** The latest `server_resuming` the client waited out, while a call is under way. */
   private resuming: { at: number; detail: string } | undefined;
 
@@ -740,8 +775,10 @@ export class HardchargerConnection {
       const options: Record<string, unknown> = {};
       if (path.catalog) options.catalog = path.catalog;
       if (path.schema) options.schema = path.schema;
-      await c.setOptions(options);
-      return this.pinSearchPath(c);
+      // The PATCH answer holds every option the session now has (§5.3): no statement ran, so it is current.
+      const now = await c.setOptions(options);
+      const text = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
+      return this.pinSearchPath(c, { catalog: text(now.catalog), schema: text(now.schema) });
     });
   }
 
@@ -754,10 +791,22 @@ export class HardchargerConnection {
     return this.run((c) => this.pinSearchPath(c));
   }
 
-  private async pinSearchPath(c: Connection): Promise<SearchPath> {
-    const doc = await c.getSession();
-    const catalog = typeof doc.options?.catalog === "string" ? doc.options.catalog : undefined;
-    const schema = typeof doc.options?.schema === "string" ? doc.options.schema : undefined;
+  private async pinSearchPath(c: Connection, known?: SearchPath): Promise<SearchPath> {
+    let catalog = known?.catalog;
+    let schema = known?.schema;
+    if (known === undefined) {
+      // After a USE, read from the engine, not the session document: a server before Chargewire
+      // 2.2.1 can answer a USE on the streamed path before it records the new catalog and schema
+      // in the session's options, so the document could still show the old ones, and pinning
+      // them would undo the USE.
+      const row = (await c.query("SELECT current_database() AS catalog_name, current_schema() AS schema_name")).get(0);
+      const value = (name: string): string | undefined => {
+        const v: unknown = row?.[name];
+        return typeof v === "string" && v !== "" ? v : undefined;
+      };
+      catalog = value("catalog_name");
+      schema = value("schema_name");
+    }
     if (catalog !== undefined && schema !== undefined) await c.setOptions({ catalog, schema });
     this.searchPath = { catalog, schema };
     return { ...this.searchPath };
@@ -978,6 +1027,7 @@ export class HardchargerConnection {
     this.client = null;
     this.connectedAt = null;
     this.mayHoldTransaction = false; // a new client opens a new session
+    this.mayHoldSettings = false;
     if (client) {
       this.replacedBefore += client.sessionReplacements;
       try {
@@ -1005,21 +1055,30 @@ export class HardchargerConnection {
         attempt++;
         const client = await this.get();
         if (options.sql !== undefined && mayOpenTransaction(options.sql)) this.mayHoldTransaction = true;
+        if (options.sql !== undefined && changesSettings(options.sql)) this.mayHoldSettings = true;
         try {
           return await this.withDeadline((ctx) => fn(client, ctx), options.timeoutSeconds);
         } catch (err) {
           if (err instanceof QueryTimeoutError || err instanceof ServerResumingError) throw err;
-          if (isConnectionLost(err) && this.mayHoldTransaction) {
+          if (isConnectionLost(err) && (this.mayHoldTransaction || this.mayHoldSettings)) {
             // Chargewire §5.7: never run a statement again on a new session when a transaction
-            // may have been open on the lost one. The client may already have opened a
-            // replacement (the error says so); otherwise start afresh at the next call.
+            // may have been open on the lost one, or when SQL changed its settings, which a new
+            // session does not have. The client may already have opened a replacement (the
+            // error says so); otherwise start afresh at the next call.
+            const transaction = this.mayHoldTransaction;
             this.mayHoldTransaction = false;
+            this.mayHoldSettings = false;
             if ((err as HardchargerError).replacementSessionId === undefined) await this.reset();
-            this.log(`[hardcharger-mcp] connection lost (${errorCode(err)}) with a transaction possibly open; not retried`);
-            throw new TransactionLostError(this.config.name, err);
+            this.log(
+              `[hardcharger-mcp] connection lost (${errorCode(err)}) with ` +
+                `${transaction ? "a transaction possibly open" : "session settings set by SQL"}; not retried`,
+            );
+            throw transaction ? new TransactionLostError(this.config.name, err) : new SettingsLostError(this.config.name, err);
           }
           if ((err as HardchargerError | undefined)?.replacementSessionId !== undefined) {
-            this.mayHoldTransaction = false; // the client's replacement session starts clean
+            // The client's replacement session starts clean.
+            this.mayHoldTransaction = false;
+            this.mayHoldSettings = false;
           }
           if (attempt < 2 && isConnectionLost(err)) {
             this.log(

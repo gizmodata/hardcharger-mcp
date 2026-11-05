@@ -17,7 +17,9 @@ import {
   DEFAULTS,
   HardchargerConnection,
   ServerResumingError,
+  SettingsLostError,
   TransactionLostError,
+  changesSettings,
   mayOpenTransaction,
   parseConfig,
 } from "../../dist/connection.js";
@@ -36,6 +38,7 @@ interface Script {
 
 function scripted(script: Script = {}) {
   const executed: string[] = [];
+  const optionsSet: Record<string, unknown>[] = [];
   const opened: ConnectOptions[] = [];
   const connect = async (options: ConnectOptions) => {
     opened.push(options);
@@ -50,12 +53,17 @@ function scripted(script: Script = {}) {
         },
       },
       async setOptions(o: Record<string, unknown>) {
+        optionsSet.push(o);
         return o;
       },
       async getSession() {
-        return { session_id: "s", options: {}, idle_timeout_s: 600 };
+        // What a server before Chargewire 2.2.1 can answer right after a USE on the streamed path.
+        return { session_id: "s", options: { catalog: "memory", schema: "main" }, idle_timeout_s: 600 };
       },
       async query(sql: string, _params: unknown, call: { signal?: AbortSignal }) {
+        if (/current_database\(\)/u.test(sql)) {
+          return tableFromArrays({ catalog_name: ["lake"], schema_name: ["sales"] });
+        }
         if (script.resumingQuery && !/hardcharger_settings/u.test(sql)) {
           options.onResuming?.({
             attempt: 1,
@@ -79,7 +87,7 @@ function scripted(script: Script = {}) {
       async close() {},
     };
   };
-  return { connect, executed, opened };
+  return { connect, executed, opened, optionsSet };
 }
 
 function connection(env: Record<string, string>, server: ReturnType<typeof scripted>) {
@@ -192,5 +200,58 @@ describe("a lost session after SQL that can begin a transaction (Chargewire §5.
     for (const sql of ["SELECT 1", "SELECT begin_date FROM t", "SELECT started FROM t"]) {
       assert.equal(mayOpenTransaction(sql), false, sql);
     }
+  });
+});
+
+describe("a lost session after SQL that changed session settings (SET, RESET, PRAGMA)", () => {
+  it("is not retried after SET: the statement does not run again on a session without the setting", async () => {
+    const server = scripted({ execute: [undefined, hcError("session_ended", { reason: "killed" })] });
+    const { conn, logs } = connection({}, server);
+    await conn.update("SET threads = 1");
+    await assert.rejects(conn.update("INSERT INTO t VALUES (1)"), (err: Error) => {
+      assert.ok(err instanceof SettingsLostError, String(err));
+      assert.match(err.message, /changes the session's settings \(SET, RESET or PRAGMA\)/u);
+      assert.match(err.message, /this statement was not run again/u);
+      return true;
+    });
+    assert.deepEqual(server.executed, ["SET threads = 1", "INSERT INTO t VALUES (1)"]);
+    assert.equal(conn.reconnects, 0);
+    assert.ok(logs.some((l) => /session settings set by SQL; not retried/u.test(l)), logs.join("\n"));
+  });
+
+  it("its twin: UPDATE ... SET is not a SET statement, and the loss is retried once", async () => {
+    const server = scripted({ execute: [undefined, hcError("session_ended", { reason: "killed" })] });
+    const { conn } = connection({}, server);
+    await conn.update("UPDATE t SET a = 1");
+    assert.equal(await conn.update("INSERT INTO t VALUES (1)"), 0);
+    assert.equal(conn.reconnects, 1);
+  });
+
+  it("when the client already opened a replacement after PRAGMA, it is used, without a retry", async () => {
+    const lost = hcError("session_not_found", { lostSessionId: "s1", replacementSessionId: "s2" });
+    const server = scripted({ execute: [undefined, lost] });
+    const { conn } = connection({}, server);
+    await conn.update("PRAGMA enable_progress_bar");
+    await assert.rejects(conn.update("INSERT INTO t VALUES (1)"), SettingsLostError);
+    assert.equal(server.opened.length, 1);
+  });
+
+  it("which SQL changes session settings: the first word of each statement, USE aside", () => {
+    for (const sql of ["SET threads = 1", "reset threads", "PRAGMA x", "-- c\nSET a = 1", "SELECT 1; SET a = 1"]) {
+      assert.equal(changesSettings(sql), true, sql);
+    }
+    for (const sql of ["UPDATE t SET a = 1", "USE lake.sales", "SELECT reset_at FROM t", "INSERT INTO settings VALUES (1)"]) {
+      assert.equal(changesSettings(sql), false, sql);
+    }
+  });
+});
+
+describe("a USE through run_query is pinned from the engine, not from the session document", () => {
+  it("reads current_database() and current_schema(), and sets both as session options", async () => {
+    const server = scripted();
+    const { conn } = connection({}, server);
+    const path = await conn.syncSearchPath();
+    assert.deepEqual(path, { catalog: "lake", schema: "sales" });
+    assert.deepEqual(server.optionsSet.at(-1), { catalog: "lake", schema: "sales" });
   });
 });

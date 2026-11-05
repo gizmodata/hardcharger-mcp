@@ -40,6 +40,13 @@ the Chargewire clients also against Hardcharger 2.2.0, from before the protocol'
   The error (`TransactionLostError`) is the answer, and the next call runs on a new session; the
   mark goes with the session (a new connection, or the client's own replacement). Without such
   SQL, a lost connection is reopened once and the call retried, as before.
+- The same goes for SQL that changes the session's settings (a statement whose first word is
+  `SET`, `RESET` or `PRAGMA`, 2.4.0): a new session does not have them, so a lost connection is not
+  retried (`SettingsLostError`), and the client (`@gizmodata/chargewire` 2.2.1) does not run a
+  request again on its own replacement either. A `USE` through `run_query` is pinned as catalog and
+  schema session options, read from the engine (`current_database()`, `current_schema()`), never
+  from the session document, which a server before Chargewire 2.2.1 can answer before recording the
+  USE; the client then counts the USE as restored.
 - A stopped server that is starting again (GizmoData Cloud auto-resume) answers `server_resuming`;
   the client waits it out for up to `HARDCHARGER_RESUME_TIMEOUT_SECONDS` (`resumeTimeout`, 600 by
   default) and reports each wait (`onResuming`), which this layer logs. A statement's wait counts
