@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "hardcharger",
   "display_name": "Hardcharger",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "description": "Query your Hardcharger™ (GizmoData™'s DuckDB 2.0 server) from Claude.",
   "long_description": "Connects Claude Desktop to a Hardcharger server over Chargewire (HTTPS) with the Hardcharger JavaScript client: pure JavaScript, no native driver, the same bundle on macOS, Windows and Linux.\n\nTools: list catalogs, schemas and tables; describe a table (columns, types, constraints, estimated rows); run parameterised SQL queries with row caps and server-side timeouts; explain a query; server info. Writes are disabled unless you enable them. A `hardcharger://{connection}/schema/{catalog}/{schema}/{table}` resource returns table DDL.\n\nSign in with a password, a signed sign-in token, a client certificate (mutual TLS), or your identity provider in the browser (login_sso). Up to three Hardcharger servers can be configured; every tool takes an optional connection argument and use_connection switches the default.\n\nThe server runs on your machine and connects directly to the Hardcharger host you configure (VPN / private networks work). Credentials are stored in your OS keychain by Claude Desktop and never appear in tool output or errors.",
   "author": {
@@ -42,6 +42,7 @@
         "HARDCHARGER_MAX_ROWS": "${user_config.max_rows}",
         "HARDCHARGER_MAX_CELL_CHARS": "${user_config.max_cell_chars}",
         "HARDCHARGER_QUERY_TIMEOUT_SECONDS": "${user_config.query_timeout_seconds}",
+        "HARDCHARGER_RESUME_TIMEOUT_SECONDS": "${user_config.resume_timeout_seconds}",
         "HARDCHARGER_ENABLE_SSO": "${user_config.enable_sso}",
         "HARDCHARGER_2_NAME": "${user_config.connection2_name}",
         "HARDCHARGER_2_URI": "${user_config.connection2_uri}",
@@ -242,6 +243,15 @@
       "default": 60,
       "min": 0,
       "max": 86400,
+      "required": false
+    },
+    "resume_timeout_seconds": {
+      "type": "number",
+      "title": "Wait for a resuming server (seconds)",
+      "description": "How long to wait for a stopped server that is starting again (a GizmoData Cloud cluster with auto-resume) before reporting it; 0 reports it at once.",
+      "default": 600,
+      "min": 0,
+      "max": 3600,
       "required": false
     },
     "enable_sso": {

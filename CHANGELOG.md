@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-05
+
+### Added
+- `HARDCHARGER_RESUME_TIMEOUT_SECONDS` (default `600`; `resume_timeout_seconds` in the Claude Desktop
+  extension, in the Helm chart's values): how long the client waits for a stopped server that is
+  starting again (`server_resuming`, a GizmoData Cloud cluster with auto-resume) before reporting it.
+  Each wait is logged to stderr, and a call whose query timeout runs out while the server is still
+  resuming fails with a message that says so ("try again in a minute") instead of a query timeout.
+  `server_info` reports `resume_timeout_seconds`.
+
+### Changed
+- Built on `@gizmodata/hardcharger` 2.2.0 and `@gizmodata/chargewire` 2.2.0 (the dependency range is
+  now `^2.2.0`): `resumeTimeout` and `onResuming`, `idle_in_transaction` in `SessionEndedReason`, and
+  the client's own rule for lost sessions (Chargewire §5.7).
+
+### Fixed
+- With writes enabled, a lost connection (an administrator's `KILL SESSION`, a server restart, a
+  lost session) after `BEGIN` was reopened and the statement retried on the new session, where it ran
+  alone in autocommit and committed while the transaction's earlier statements had been rolled back.
+  Once SQL that can begin a transaction (`BEGIN`, `START TRANSACTION`, anything naming autocommit) has
+  run on a connection, a lost connection is no longer retried: the call fails with an error that says
+  the transaction was rolled back and the statement did not run again, and the next call runs on a new
+  session. A metadata call that finds such a loss fails the same way. Without such SQL, a lost
+  connection is still reopened once and the call retried.
+
 ## [2.2.1] - 2026-11-04
 
 ### Changed

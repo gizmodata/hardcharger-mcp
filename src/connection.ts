@@ -58,6 +58,8 @@ export interface ConnectionConfig {
   defaultSchema?: string;
   /** Per-statement timeout applied to this connection's statements (0 = none). */
   queryTimeoutSeconds: number;
+  /** How long the client waits for a resuming server (`server_resuming`) before reporting it (0 = not at all). */
+  resumeTimeoutSeconds: number;
   /** Brokered connections: the broker's id for this server. */
   id?: string;
   /** Brokered connections: a human description (e.g. organization / project / cluster). */
@@ -79,6 +81,8 @@ export interface McpConfig {
   maxRows: number;
   maxCellChars: number;
   queryTimeoutSeconds: number;
+  /** Seconds the client waits for a stopped server that is starting again (HARDCHARGER_RESUME_TIMEOUT_SECONDS). */
+  resumeTimeoutSeconds: number;
   /** Bearer token required on every Streamable HTTP request (http transport only). */
   mcpBearerToken?: string;
   /** OAuth resource-server settings for the HTTP transport (set when HARDCHARGER_MCP_OAUTH_ISSUER is configured). */
@@ -112,6 +116,7 @@ export const DEFAULTS = {
   maxRows: 500,
   maxCellChars: 200,
   queryTimeoutSeconds: 60,
+  resumeTimeoutSeconds: 600,
   connectionName: "default",
   sessionIdleSeconds: 1800,
   maxSessions: 200,
@@ -201,7 +206,7 @@ function parseConnection(
   env: NodeJS.ProcessEnv,
   prefix: string,
   defaultName: string,
-  globals: { queryTimeoutSeconds: number; enableSso: boolean },
+  globals: { queryTimeoutSeconds: number; resumeTimeoutSeconds: number; enableSso: boolean },
 ): ConnectionConfig | null {
   const v = (suffix: string) => env[`${prefix}${suffix}`];
   const rawUri = nonEmpty(v("URI"));
@@ -261,6 +266,7 @@ function parseConnection(
     defaultCatalog: nonEmpty(v("DEFAULT_CATALOG")),
     defaultSchema: nonEmpty(v("DEFAULT_SCHEMA")),
     queryTimeoutSeconds: globals.queryTimeoutSeconds,
+    resumeTimeoutSeconds: globals.resumeTimeoutSeconds,
   };
 }
 
@@ -284,7 +290,13 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): McpConfig {
     DEFAULTS.queryTimeoutSeconds,
     { min: 0, max: 86400 },
   );
-  const globals = { queryTimeoutSeconds, enableSso };
+  const resumeTimeoutSeconds = parseInteger(
+    "HARDCHARGER_RESUME_TIMEOUT_SECONDS",
+    env.HARDCHARGER_RESUME_TIMEOUT_SECONDS,
+    DEFAULTS.resumeTimeoutSeconds,
+    { min: 0, max: 3600 },
+  );
+  const globals = { queryTimeoutSeconds, resumeTimeoutSeconds, enableSso };
 
   const connections: ConnectionConfig[] = [];
   const primary = parseConnection(
@@ -358,6 +370,7 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): McpConfig {
       max: 100000,
     }),
     queryTimeoutSeconds,
+    resumeTimeoutSeconds,
     mcpBearerToken,
     mcpOAuth,
     mcpSessionIdleSeconds: parseInteger(
@@ -512,6 +525,47 @@ export class QueryTimeoutError extends Error {
   }
 }
 
+/**
+ * A statement's time ran out while the server was resuming (a stopped server starting again,
+ * `server_resuming`): the server never ran it. Retrying in a while is the way on.
+ */
+export class ServerResumingError extends Error {
+  constructor(name: string, seconds: number, detail: string) {
+    super(
+      `The Hardcharger server of connection "${name}" is resuming (a stopped server starting again: ${detail}). ` +
+        `It was still starting when this call's ${seconds}s timeout (HARDCHARGER_QUERY_TIMEOUT_SECONDS) ran out, ` +
+        "and the statement did not run. Try again in a minute.",
+    );
+    this.name = "ServerResumingError";
+  }
+}
+
+/**
+ * The connection was lost while a transaction may have been open on it: the server rolled the
+ * transaction back, and the statement was not run again (on a new session it would run alone,
+ * in autocommit).
+ */
+export class TransactionLostError extends Error {
+  constructor(name: string, cause: unknown) {
+    super(
+      `The connection "${name}" lost its Hardcharger session (${errorCode(cause) ?? "connection lost"}) after SQL ` +
+        "that can begin a transaction (BEGIN, START TRANSACTION, autocommit) ran on it, so a transaction may have " +
+        "been open: the server rolled it back, and this statement was not run again. Nothing since that BEGIN is " +
+        "committed; start the transaction again. The connection is usable.",
+      { cause },
+    );
+    this.name = "TransactionLostError";
+  }
+}
+
+/**
+ * Whether `sql` may open a transaction that outlives the statement (the Chargewire client's own
+ * test): a word search that may suspect a transaction where there is none, never the reverse.
+ */
+export function mayOpenTransaction(sql: string): boolean {
+  return /\b(?:begin|start\s+transaction|autocommit)\b/iu.test(sql);
+}
+
 /** Grace added to the server-side timeout before the client-side abort fires. */
 const CLIENT_DEADLINE_GRACE_MS = 5000;
 /** If an abort does not settle the call, drop the connection after this. */
@@ -594,6 +648,8 @@ export interface SearchPath {
 export interface RunOptions {
   /** Overrides the configured timeout for this operation (seconds; 0 = none). */
   timeoutSeconds?: number;
+  /** The SQL the operation runs, for the transaction bookkeeping (see mayOpenTransaction). */
+  sql?: string;
 }
 
 /** What `run` hands each operation: the connection and the statement options to use. */
@@ -655,6 +711,10 @@ export class HardchargerConnection {
   /** The server's startup settings from hardcharger_settings(); null until read or when unavailable. */
   private serverSettings: Map<string, string> | null = null;
   private readonly openClient: NonNullable<ConnectionHooks["connect"]>;
+  /** SQL that can begin a transaction ran on the current client's session (mayOpenTransaction). */
+  private mayHoldTransaction = false;
+  /** The latest `server_resuming` the client waited out, while a call is under way. */
+  private resuming: { at: number; detail: string } | undefined;
 
   constructor(
     readonly config: ConnectionConfig,
@@ -780,6 +840,15 @@ export class HardchargerConnection {
       logger: {
         warn: (message, fields) =>
           this.log(`[hardcharger-mcp] ${this.redact(message)}${fields ? ` ${this.redact(JSON.stringify(fields))}` : ""}`),
+      },
+      resumeTimeout: cfg.resumeTimeoutSeconds,
+      onResuming: (event) => {
+        this.resuming = { at: Date.now(), detail: event.detail };
+        this.log(
+          `[hardcharger-mcp] ${cfg.name}: the server is resuming (attempt ${event.attempt}, ` +
+            `${Math.round(event.elapsedMs / 1000)}s of ${Math.round(event.resumeTimeoutMs / 1000)}s; ` +
+            `next try in ${Math.round(event.retryAfterMs / 1000)}s): ${this.redact(event.detail)}`,
+        );
       },
     };
     const tls = this.tlsOptions();
@@ -908,6 +977,7 @@ export class HardchargerConnection {
     const client = this.client;
     this.client = null;
     this.connectedAt = null;
+    this.mayHoldTransaction = false; // a new client opens a new session
     if (client) {
       this.replacedBefore += client.sessionReplacements;
       try {
@@ -934,10 +1004,23 @@ export class HardchargerConnection {
       for (;;) {
         attempt++;
         const client = await this.get();
+        if (options.sql !== undefined && mayOpenTransaction(options.sql)) this.mayHoldTransaction = true;
         try {
           return await this.withDeadline((ctx) => fn(client, ctx), options.timeoutSeconds);
         } catch (err) {
-          if (err instanceof QueryTimeoutError) throw err;
+          if (err instanceof QueryTimeoutError || err instanceof ServerResumingError) throw err;
+          if (isConnectionLost(err) && this.mayHoldTransaction) {
+            // Chargewire §5.7: never run a statement again on a new session when a transaction
+            // may have been open on the lost one. The client may already have opened a
+            // replacement (the error says so); otherwise start afresh at the next call.
+            this.mayHoldTransaction = false;
+            if ((err as HardchargerError).replacementSessionId === undefined) await this.reset();
+            this.log(`[hardcharger-mcp] connection lost (${errorCode(err)}) with a transaction possibly open; not retried`);
+            throw new TransactionLostError(this.config.name, err);
+          }
+          if ((err as HardchargerError | undefined)?.replacementSessionId !== undefined) {
+            this.mayHoldTransaction = false; // the client's replacement session starts clean
+          }
           if (attempt < 2 && isConnectionLost(err)) {
             this.log(
               `[hardcharger-mcp] connection lost (${errorCode(err)}), reconnecting: ${this.redact(err instanceof Error ? err.message : String(err))}`,
@@ -962,6 +1045,7 @@ export class HardchargerConnection {
     // abort is a backstop a few seconds later.
     const controller = new AbortController();
     const timeoutError = new QueryTimeoutError(seconds);
+    const started = Date.now();
     let abortTimer: NodeJS.Timeout | undefined;
     let resetTimer: NodeJS.Timeout | undefined;
     const hardReset = new Promise<never>((_, reject) => {
@@ -978,6 +1062,11 @@ export class HardchargerConnection {
     } catch (err) {
       const code = errorCode(err);
       if (code === "statement_timeout" || err === timeoutError || (controller.signal.aborted && code === "statement_cancelled")) {
+        // Out of time while waiting for a resuming server: say so, not "the query was slow".
+        const resuming = this.resuming;
+        if (code !== "statement_timeout" && resuming !== undefined && resuming.at >= started) {
+          throw new ServerResumingError(this.config.name, seconds, this.redact(resuming.detail));
+        }
         throw timeoutError;
       }
       throw err;
@@ -999,7 +1088,7 @@ export class HardchargerConnection {
         }
       }
       return c.query(sql, params, statementOptions(ctx));
-    }, options);
+    }, { ...options, sql });
   }
 
   /**
@@ -1036,7 +1125,7 @@ export class HardchargerConnection {
       } finally {
         await prepared?.close().catch(() => undefined);
       }
-    }, options);
+    }, { ...options, sql });
   }
 
   /** Convenience: execute a statement returning the affected-row count (-1 when the engine does not count). */
@@ -1054,7 +1143,7 @@ export class HardchargerConnection {
         count = await c.execute(sql, params, statementOptions(ctx));
       }
       return count ?? -1;
-    }, options);
+    }, { ...options, sql });
   }
 }
 

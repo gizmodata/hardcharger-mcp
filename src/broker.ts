@@ -283,6 +283,7 @@ export class BrokeredRegistry extends ConnectionRegistry {
         defaultCatalog: c.default_catalog ?? undefined,
         defaultSchema: c.default_schema ?? undefined,
         queryTimeoutSeconds: this.config.queryTimeoutSeconds,
+        resumeTimeoutSeconds: this.config.resumeTimeoutSeconds,
         id: c.id,
         label: c.label ?? undefined,
         allowWrites: c.allow_writes,

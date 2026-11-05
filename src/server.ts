@@ -828,6 +828,7 @@ export function createServer(ctx: ServerContext): McpServer {
         max_rows: config.maxRows,
         max_cell_chars: config.maxCellChars,
         query_timeout_seconds: config.queryTimeoutSeconds,
+        resume_timeout_seconds: config.resumeTimeoutSeconds,
         default_catalog: connection.currentSearchPath().catalog ?? null,
         default_schema: connection.currentSearchPath().schema ?? null,
         transport: ctx.transport,

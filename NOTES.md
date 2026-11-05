@@ -34,6 +34,17 @@ the Chargewire clients also against Hardcharger 2.2.0, from before the protocol'
   commit on its own while the transaction's earlier statements had been rolled back (before 2.2.1
   this layer reconnected and re-ran it, and it committed). The error is the answer; the next
   statement runs on the new session.
+- A lost connection is never retried here once SQL that can begin a transaction (`BEGIN`,
+  `START TRANSACTION`, anything naming autocommit) ran on it (Chargewire §5.7, 2.3.0): the server
+  rolled the transaction back, and on a new session the statement would run alone, in autocommit.
+  The error (`TransactionLostError`) is the answer, and the next call runs on a new session; the
+  mark goes with the session (a new connection, or the client's own replacement). Without such
+  SQL, a lost connection is reopened once and the call retried, as before.
+- A stopped server that is starting again (GizmoData Cloud auto-resume) answers `server_resuming`;
+  the client waits it out for up to `HARDCHARGER_RESUME_TIMEOUT_SECONDS` (`resumeTimeout`, 600 by
+  default) and reports each wait (`onResuming`), which this layer logs. A statement's wait counts
+  against `HARDCHARGER_QUERY_TIMEOUT_SECONDS`; a call that runs out of time while the server is
+  still resuming fails with `ServerResumingError` ("try again in a minute"), not as a slow query.
 - `hardcharger_sessions()` reports a UUID per session, not the Chargewire session id the client
   sees; `KILL SESSION` takes the former (`HARDCHARGER_CURRENT_SESSION()`).
 - Timeouts: `statementTimeoutMs` (§6.9) per statement; the server cancels and answers

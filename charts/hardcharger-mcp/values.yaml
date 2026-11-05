@@ -30,6 +30,8 @@ config:
   # HARDCHARGER_DEFAULT_SCHEMA: ""
   # HARDCHARGER_MAX_ROWS: "500"
   # HARDCHARGER_QUERY_TIMEOUT_SECONDS: "60"
+  # Seconds to wait for a stopped server that is starting again (server_resuming); 0: report it at once.
+  # HARDCHARGER_RESUME_TIMEOUT_SECONDS: "600"
 
   # Public URL of the MCP endpoint (the OAuth resource identifier). Must match
   # ingress.host and end in /mcp.
