@@ -87,4 +87,27 @@ describe("a transaction left idle (session_ended, idle_in_transaction)", () => {
     await ok(rw, "execute_statement", { sql: `INSERT INTO ${name} VALUES (3)` });
     assert.equal(await count(name), 1n);
   });
+
+  it("a session killed after BEGIN is not reopened and retried: the statement fails and did not run (Chargewire §5.7)", async () => {
+    const name = await table();
+    await ok(rw, "execute_statement", { sql: "BEGIN" });
+    await ok(rw, "execute_statement", { sql: `INSERT INTO ${name} VALUES (1)` });
+    const sid = (await ok<{ rows: string[][] }>(rw, "run_query", { sql: "SELECT HARDCHARGER_CURRENT_SESSION() AS s" })).rows[0]![0]!;
+    const before = (await ok<{ reconnects: number }>(rw, "server_info")).reconnects;
+    const admin = await adminConnection(server);
+    try {
+      await admin.execute(`KILL SESSION '${sid}'`);
+    } finally {
+      await admin.close();
+    }
+    const text = await failsWith(rw, "execute_statement", { sql: `INSERT INTO ${name} VALUES (2)` }, /not run again/u);
+    assert.match(text, /session_ended/u);
+    // Rolled back with the killed session, and the failed INSERT never ran on a new session.
+    assert.equal(await count(name), 0n);
+    assert.equal((await ok<{ reconnects: number }>(rw, "server_info")).reconnects, before, "no reconnect and retry");
+    assert.match(stderr.join(""), /with a transaction possibly open; not retried/u);
+    // The next statement runs on a new connection, in autocommit.
+    await ok(rw, "execute_statement", { sql: `INSERT INTO ${name} VALUES (3)` });
+    assert.equal(await count(name), 1n);
+  });
 });

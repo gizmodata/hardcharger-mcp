@@ -38,8 +38,8 @@ runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: 2.2.1, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.1.1 (hardcharger-js
-> `3849b40`, on `@gizmodata/chargewire` 2.1.0, chargewire-js `8a4ed78`, Chargewire protocol 1.0.0);
+> **Status: 2.3.0, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.2.0 (hardcharger-js
+> `d790324`, on `@gizmodata/chargewire` 2.2.0, chargewire-js `5380630`, Chargewire protocol 1.0.0);
 > tested against the image of Hardcharger's main branch and against Hardcharger 2.2.0, released
 > before the protocol was renamed to Chargewire.
 
@@ -321,6 +321,7 @@ Only `HARDCHARGER_*` names are read.
 | `HARDCHARGER_MAX_ROWS` | `500` | Hard cap on rows returned by `run_query` |
 | `HARDCHARGER_MAX_CELL_CHARS` | `200` | Cells longer than this are truncated with `…` |
 | `HARDCHARGER_QUERY_TIMEOUT_SECONDS` | `60` | Per-statement timeout, enforced by the server; `0` disables it |
+| `HARDCHARGER_RESUME_TIMEOUT_SECONDS` | `600` | How long to wait for a stopped server that is starting again (`server_resuming`, a GizmoData Cloud cluster with auto-resume) before reporting it; `0` reports it at once. Each wait is logged to stderr. The sign-in waits up to this long; a statement's wait also counts against the query timeout, and a call that runs out of time while the server is still resuming says so ("try again in a minute") |
 | `HARDCHARGER_ENABLE_SSO` | `false` | Register the `login_sso` tool (credentials may then be left empty) |
 | `HARDCHARGER_BROWSER` | platform's | Program that opens the sign-in page for `login_sso` |
 | `HARDCHARGER_MCP_BEARER_TOKEN` | | HTTP transport: static bearer token (mutually exclusive with OAuth) |
