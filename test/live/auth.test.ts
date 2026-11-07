@@ -53,6 +53,7 @@ describe("password sign-in", () => {
 
   it("signs in with a password containing ':' and '@'; a wrong one is invalid_credentials (401)", async () => {
     const good = await mcp(passwordSettings(server));
+    await ok(good, "run_query", { sql: "SELECT 1" }); // server_info never connects: a query does
     const info = await ok<{ user: string; auth_method: string }>(good, "server_info");
     assert.equal(info.user, adminUsername);
     assert.equal(info.auth_method, "password");
@@ -120,6 +121,7 @@ describe("sign-in tokens and browser sign-in (an identity provider)", () => {
 
   it("HARDCHARGER_TOKEN signs in with the token_exchange grant as the token's user and role", async () => {
     const client = await mcp({ HARDCHARGER_URI: server.uri, HARDCHARGER_TOKEN: await token({ sub: "a", email: "alice@example.com", role: "admin" }) });
+    await ok(client, "run_query", { sql: "SELECT 1" }); // server_info never connects: a query does
     const info = await ok<{ user: string; role: string; auth_method: string }>(client, "server_info");
     assert.equal(info.user, "alice@example.com");
     assert.equal(info.role, "admin");
@@ -132,6 +134,7 @@ describe("sign-in tokens and browser sign-in (an identity provider)", () => {
       HARDCHARGER_USERNAME: "token",
       HARDCHARGER_PASSWORD: await token({ sub: "c", email: "carol@example.com", role: "admin" }),
     });
+    await ok(client, "run_query", { sql: "SELECT 1" }); // server_info never connects: a query does
     assert.equal((await ok<{ user: string }>(client, "server_info")).user, "carol@example.com");
   });
 
@@ -193,6 +196,7 @@ describe("sign-in tokens and browser sign-in (an identity provider)", () => {
     await failsWith(client, "run_query", { sql: "SELECT 1" }, /has no credentials yet: call login_sso/);
     const signedIn = await ok<{ status: string }>(client, "login_sso", { wait_seconds: 30 });
     assert.equal(signedIn.status, "complete");
+    await ok(client, "run_query", { sql: "SELECT 1" }); // server_info never connects: a query does
     const info = await ok<{ user: string; auth_method: string }>(client, "server_info");
     assert.equal(info.user, "sso-user@example.com");
     assert.equal(info.auth_method, "sso");
@@ -280,6 +284,7 @@ describe("client certificate sign-in (mutual TLS)", () => {
   it("the certificate is the credential: no password, the identity is its e-mail SAN", async () => {
     assert.equal(server.uri, `hardcharger://127.0.0.1:${server.port}`, "TLS by default");
     const client = await mcp(certSettings());
+    await ok(client, "run_query", { sql: "SELECT 1" }); // server_info never connects: a query does
     const info = await ok<{ user: string; auth_method: string; tls: boolean }>(client, "server_info");
     assert.equal(info.user, clientEmail);
     assert.equal(info.auth_method, "mtls");
@@ -300,11 +305,13 @@ describe("client certificate sign-in (mutual TLS)", () => {
     const untrusted = await mcp(noRoots);
     await failsWith(untrusted, "run_query", { sql: "SELECT 1" }, "client_transport_error");
     const skipping = await mcp({ ...noRoots, HARDCHARGER_TLS_SKIP_VERIFY: "true" });
+    await ok(skipping, "run_query", { sql: "SELECT 1" }); // server_info never connects: a query does
     assert.equal((await ok<{ user: string }>(skipping, "server_info")).user, clientEmail);
   });
 
   it("a password over the same TLS server signs in as that user, the certificate only admitting the connection", async () => {
     const client = await mcp({ ...certSettings(), HARDCHARGER_USERNAME: adminUsername, HARDCHARGER_PASSWORD: server.password });
+    await ok(client, "run_query", { sql: "SELECT 1" }); // server_info never connects: a query does
     const info = await ok<{ user: string; auth_method: string }>(client, "server_info");
     assert.equal(info.user, adminUsername);
     assert.equal(info.auth_method, "password");

@@ -348,7 +348,8 @@ Only `HARDCHARGER_*` names are read.
 | `HARDCHARGER_CONNECTIONS` | | Comma-separated names of further connections, see below |
 
 The default catalog and schema are optional session options: if one does not exist, the server
-still starts and reports the problem (with the catalogs it found) in `server_info`. In a chat,
+still starts and reports the problem (with the catalogs it found) in `server_info`, once a query
+has connected. In a chat,
 `use_schema` or a plain `USE catalog.schema` switches for the rest of the session.
 
 ### 🔀 Multiple connections
@@ -435,8 +436,9 @@ ssh -N -L 31337:hardcharger.internal:31337 bastion.example.com
 kubectl port-forward svc/hardcharger 31337:31337
 ```
 
-**`invalid_credentials`, `unknown_certificate_identity`, `permission_denied`.** `server_info` shows
-the user and role the server signed in. Username and password must both be set; a token's issuer,
+**`invalid_credentials`, `unknown_certificate_identity`, `permission_denied`.** A query (`SELECT 1`)
+shows the server's error; after one, `server_info` shows the user and role the server signed in
+(it never connects by itself). Username and password must both be set; a token's issuer,
 audience and e-mail must be ones the server accepts; with SSO, run `login_sso` first.
 
 **Tools do not appear in the chat.** Open the **+** menu, choose Connectors and enable Hardcharger.

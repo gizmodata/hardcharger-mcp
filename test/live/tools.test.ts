@@ -74,6 +74,7 @@ describe("hardcharger-mcp tools against hardcharger-server", () => {
   });
 
   it("server_info reports versions, the user, the protocol and redacts credentials", async () => {
+    await ok(ro, "run_query", { sql: "SELECT 1" }); // server_info never connects: a query does
     const r = await call(ro, "server_info");
     assert.equal(r.isError, undefined, textOf(r));
     const text = textOf(r);
@@ -305,6 +306,7 @@ describe("hardcharger-mcp tools against hardcharger-server", () => {
       HARDCHARGER_DEFAULT_SCHEMA: "main",
     });
     try {
+      await ok(withDefault, "run_query", { sql: "SELECT 1" }); // server_info never connects: a query does
       const s = await ok<{ default_catalog: string; default_schema: string; current_catalog: string; current_schema: string; session_warnings: string[] }>(
         withDefault,
         "server_info",
@@ -328,6 +330,7 @@ describe("hardcharger-mcp tools against hardcharger-server", () => {
 
     const badDefault = await stdioClient({ ...passwordSettings(server), HARDCHARGER_DEFAULT_CATALOG: "no_such_catalog" });
     try {
+      await ok(badDefault, "run_query", { sql: "SELECT 1" }); // server_info never connects: a query does
       const s = await ok<{ session_warnings: string[]; current_catalog: string }>(badDefault, "server_info");
       assert.equal(s.session_warnings.length, 1);
       assert.match(s.session_warnings[0]!, /Default catalog\/schema could not be applied/);

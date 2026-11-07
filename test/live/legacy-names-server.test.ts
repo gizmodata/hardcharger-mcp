@@ -44,6 +44,7 @@ describe("hardcharger-mcp against a Hardcharger from before the rename", () => {
   });
 
   it("server_info connects with a current hardcharger:// URI", async () => {
+    await ok(rw, "run_query", { sql: "SELECT 1" }); // server_info never connects: a query does
     const s = await ok(rw, "server_info");
     assert.match(String(s.hardcharger_version), /^\d+\.\d+\.\d+/);
     assert.equal(s.user, username);
