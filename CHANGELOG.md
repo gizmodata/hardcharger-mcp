@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-11-07
+
+### Added
+- Connecting to a GizmoData Cloud cluster that is stopped (auto-resume) no longer starts it: the
+  client connects lazily when the server's stand-in says it is stopped, and signs in at the first
+  query or statement (from `@gizmodata/hardcharger` 2.4.2 on `@gizmodata/chargewire` 2.3.3).
+
+### Fixed
+- Listing and describing never sign in to a server or open a session there, so they never start a
+  GizmoData Cloud cluster that was stopped while idle (auto-resume): only a query or statement
+  against a server may. `server_info` reports a connection not used yet from its configuration
+  (versions and user say "not connected yet"; it used to connect to read them), and the table
+  resource list covers only connections already in use, with or without a broker (it used to sign
+  in to every configured server). `list_connections` asks only the broker, as before.
+- Closing a person's idle session (after `HARDCHARGER_MCP_SESSION_IDLE_SECONDS`), and closing a
+  connection, no longer signs in first when the token is close to expiring (from
+  `@gizmodata/hardcharger` 2.4.2 on `@gizmodata/chargewire` 2.3.3, whose cancels, `transaction()`
+  clean-up and progress polls never sign in either). Before, an idle eviction late in a token's
+  life sent a sign-in that woke the stopped cluster for nobody.
+
+### Changed
+- Built on `@gizmodata/hardcharger` 2.4.2 (hardcharger-js `372c798`) and `@gizmodata/chargewire`
+  2.3.3 (chargewire-js `ca7940a`); the dependency range is `^2.4.2`.
+
 ## [2.4.0] - 2026-11-05
 
 ### Added

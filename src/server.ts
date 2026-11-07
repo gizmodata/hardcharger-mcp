@@ -260,6 +260,9 @@ async function listTables(c: Connection, catalog?: string, schema?: string, like
   }));
 }
 
+/** What server_info reports for a connection not connected yet (it never connects one). */
+export const NOT_CONNECTED = "not connected yet (run_query or execute_statement connects)";
+
 /** Builds the McpServer with every tool/resource registered against `ctx`. */
 export function createServer(ctx: ServerContext): McpServer {
   const { registry, config } = ctx;
@@ -773,7 +776,8 @@ export function createServer(ctx: ServerContext): McpServer {
       title: "Server info",
       description:
         "Reports the Hardcharger and DuckDB versions of a connection, its connection URI (credentials " +
-        "redacted), the effective limits, every configured connection, and this MCP server's version.",
+        "redacted), the effective limits, every configured connection, and this MCP server's version. It never " +
+        "connects: for a connection not used yet, the versions and user wait for the first run_query.",
       inputSchema: jsonSchema2020({ connection: connectionArg }),
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -786,25 +790,32 @@ export function createServer(ctx: ServerContext): McpServer {
       let role = "unknown";
       let currentCatalog = "unknown";
       let currentSchema = "unknown";
-      try {
-        const t = await connection.query(
-          "SELECT HARDCHARGER_VERSION() AS hv, version() AS dv, HARDCHARGER_USER() AS u, HARDCHARGER_ROLE() AS r, " +
-            "current_catalog() AS c, current_schema() AS s",
-        );
-        hardchargerVersion = String(t.getChildAt(0)?.get(0));
-        duckdbVersion = String(t.getChildAt(1)?.get(0));
-        user = String(t.getChildAt(2)?.get(0));
-        role = String(t.getChildAt(3)?.get(0));
-        currentCatalog = String(t.getChildAt(4)?.get(0));
-        currentSchema = String(t.getChildAt(5)?.get(0));
-      } catch {
-        // A Chargewire server other than Hardcharger: its server-info document names it.
+      // Describing a server must not start it: signing in wakes a GizmoData Cloud cluster that was
+      // stopped while idle (auto-resume). Only a connection the caller already uses is asked.
+      const connected = connection.connectedAt !== null;
+      if (!connected) {
+        hardchargerVersion = duckdbVersion = user = role = currentCatalog = currentSchema = NOT_CONNECTED;
+      } else {
         try {
-          const info = await connection.run((c) => c.metadata.serverInfo());
-          hardchargerVersion = `${String(info.server_name ?? "unknown server")} ${String(info.server_version ?? "")}`.trim();
-          duckdbVersion = String(info["duckdb_version"] ?? "unknown");
+          const t = await connection.query(
+            "SELECT HARDCHARGER_VERSION() AS hv, version() AS dv, HARDCHARGER_USER() AS u, HARDCHARGER_ROLE() AS r, " +
+              "current_catalog() AS c, current_schema() AS s",
+          );
+          hardchargerVersion = String(t.getChildAt(0)?.get(0));
+          duckdbVersion = String(t.getChildAt(1)?.get(0));
+          user = String(t.getChildAt(2)?.get(0));
+          role = String(t.getChildAt(3)?.get(0));
+          currentCatalog = String(t.getChildAt(4)?.get(0));
+          currentSchema = String(t.getChildAt(5)?.get(0));
         } catch {
-          // leave unknowns
+          // A Chargewire server other than Hardcharger: its server-info document names it.
+          try {
+            const info = await connection.run((c) => c.metadata.serverInfo());
+            hardchargerVersion = `${String(info.server_name ?? "unknown server")} ${String(info.server_version ?? "")}`.trim();
+            duckdbVersion = String(info["duckdb_version"] ?? "unknown");
+          } catch {
+            // leave unknowns
+          }
         }
       }
       const auth = connection.effectiveAuth();
@@ -838,7 +849,7 @@ export function createServer(ctx: ServerContext): McpServer {
         session_idle_timeout_seconds: ctx.session ? config.mcpSessionIdleSeconds : null,
         // Hardcharger's own idle timeout for the session; the client replaces a session the
         // server dropped and replays its catalog and schema.
-        hardcharger_session_idle_timeout_seconds: await connection.sessionIdleTimeoutSeconds(),
+        hardcharger_session_idle_timeout_seconds: connected ? await connection.sessionIdleTimeoutSeconds() : null,
         session_replacements: connection.sessionReplacements(),
         reconnects: connection.reconnects,
         protocol: discovery ? `${discovery.protocol} ${(discovery.protocol_versions ?? []).join(",")}`.trim() : null,

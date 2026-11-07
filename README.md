@@ -38,8 +38,8 @@ runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: 2.4.0, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.3.0 (hardcharger-js
-> `7a91507`, on `@gizmodata/chargewire` 2.2.1, chargewire-js `56df77e`, Chargewire protocol 1.0.0);
+> **Status: 2.4.1, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.4.2 (hardcharger-js
+> `372c798`, on `@gizmodata/chargewire` 2.3.3, chargewire-js `ca7940a`, Chargewire protocol 1.0.0);
 > tested against the image of Hardcharger's main branch and against Hardcharger 2.2.0, released
 > before the protocol was renamed to Chargewire.
 
@@ -57,13 +57,16 @@ runs on. It is the Hardcharger port of
 | `run_query(sql, params?, max_rows?)` | Runs a query; returns a Markdown table plus structured JSON, capped at `max_rows` |
 | `explain_query(sql)` | DuckDB `EXPLAIN` plan without executing |
 | `execute_statement(sql, params?)` | DML/DDL with affected-row count. Only registered when writes are enabled |
-| `server_info()` | Hardcharger/DuckDB versions, signed-in user and role, connection URI, limits, extension version |
+| `server_info()` | Hardcharger/DuckDB versions, signed-in user and role, connection URI, limits, extension version (for a connection not used yet, only what needs no connection: it never signs in) |
 | `login_sso(wait_seconds?)` | Browser sign-in through the server's identity provider. Only registered when SSO is enabled |
 
 Every tool except `list_connections` and `use_connection` also accepts an optional `connection`
 argument naming one of the configured servers (see [Multiple connections](#-multiple-connections)).
 A resource template, `hardcharger://{connection}/schema/{catalog}/{schema}/{table}`, returns the
-DDL of a table or view.
+DDL of a table or view. Table resources are listed only for connections already in use.
+
+Querying a stopped GizmoData Cloud cluster with auto-resume waits for it to start; listing
+(`list_connections`, `server_info`, the resource list) never starts one.
 
 ### Query parameters
 
@@ -283,8 +286,9 @@ It needs OAuth (each request must carry a verified person) and the HTTP transpor
 person's access token is never the broker credential: the server authenticates to the broker
 with `HARDCHARGER_MCP_BROKER_TOKEN` and presents the person's token as an RFC 8693 subject token.
 Writes need both `HARDCHARGER_ALLOW_WRITES=true` (the server-wide ceiling) and the broker's
-`allow_writes` for that person and server. Table resources are listed only for servers the
-person has already used, so a resource listing never signs in to every server they can reach.
+`allow_writes` for that person and server. Table resources are listed, and `server_info` asks a
+server, only for servers the person has already used, so listing never signs in to every server
+they can reach.
 The protocol, for anyone writing a broker, is in
 [docs/connection-broker.md](docs/connection-broker.md).
 

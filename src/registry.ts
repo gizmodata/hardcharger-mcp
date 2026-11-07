@@ -159,9 +159,13 @@ export class ConnectionRegistry {
     return this.all().some((c) => this.allowsWrites(c));
   }
 
-  /** Connections whose tables are listed as resources: every configured one. */
+  /**
+   * Connections whose tables are listed as resources: only those the caller already uses.
+   * Listing must never sign in or open a session: that would start every server it can reach,
+   * among them GizmoData Cloud clusters stopped while idle (auto-resume).
+   */
   resourceConnections(): HardchargerConnection[] {
-    return this.all();
+    return this.all().filter((c) => c.connectedAt !== null);
   }
 
   /** Every secret from every connection plus the HTTP bearer token and the broker credential. */
