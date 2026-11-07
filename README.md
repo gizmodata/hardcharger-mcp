@@ -38,7 +38,7 @@ runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: 2.4.1, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.4.3 (hardcharger-js
+> **Status: 2.4.2, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.4.3 (hardcharger-js
 > `790b731`, on `@gizmodata/chargewire` 2.3.4, chargewire-js `ce05df6`, Chargewire protocol 1.0.0);
 > tested against the image of Hardcharger's main branch and against Hardcharger 2.2.0, released
 > before the protocol was renamed to Chargewire.
@@ -408,7 +408,11 @@ not a shared service account.
   session are gone. A session an administrator killed, a closed connection or a transport failure
   reopens the connection once and retries (`reconnects`); a refused credential is never retried,
   and neither is a session ended because the sign-in was withdrawn (`token_revoked`,
-  `credentials_changed`, `principal_dropped`). With writes enabled, a transaction (`BEGIN` through
+  `credentials_changed`, `principal_dropped`). One exception: a connection whose token was revoked
+  (`invalid_token` with `token_revoked`, which GizmoData Cloud answers after a person stops a
+  cluster) is dropped, and the call that found it opens a new connection that signs in fresh, once
+  (connecting again starts the cluster); a second refusal is the error. Idle cleanup and listing
+  never do this. With writes enabled, a transaction (`BEGIN` through
   `execute_statement`) left idle past the server's `idle_in_transaction_session_timeout`
   (Hardcharger 2.7.0) is rolled back by the server: the next statement fails with
   `session_ended` and `idle_in_transaction` and is not retried, so it can't commit on its own
