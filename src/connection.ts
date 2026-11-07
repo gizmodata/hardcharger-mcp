@@ -657,6 +657,16 @@ export function isConnectionLost(err: unknown): boolean {
   );
 }
 
+/**
+ * The connection's sign-in was revoked (`invalid_token` with reason `token_revoked`): after a
+ * person's Stop, GizmoData Cloud's holder refuses every token issued before it. The client never
+ * signs in again on its own (§4.2), but a tool call is the person's own request, so this layer
+ * opens a new connection for it, once, which signs in fresh (and starts the cluster).
+ */
+export function isSignInRevoked(err: unknown): boolean {
+  return errorCode(err) === HardchargerErrorCode.invalidToken && (err as HardchargerError).reason === "token_revoked";
+}
+
 /** A plain-HTTP server answered a TLS handshake: the URI needs `?tls=false`. */
 function isPlainHttpServer(err: unknown): boolean {
   if (errorCode(err) !== HardchargerErrorCode.clientTransportError) return false;
@@ -1087,7 +1097,9 @@ export class HardchargerConnection {
           return await this.withDeadline((ctx) => fn(client, ctx), options.timeoutSeconds);
         } catch (err) {
           if (err instanceof QueryTimeoutError || err instanceof ServerResumingError) throw err;
-          if (isConnectionLost(err) && (this.mayHoldTransaction || this.mayHoldSettings)) {
+          // A revoked sign-in (a person's Stop) leaves this connection unusable, like a lost one.
+          const lost = isConnectionLost(err) || isSignInRevoked(err);
+          if (lost && (this.mayHoldTransaction || this.mayHoldSettings)) {
             // Chargewire §5.7: never run a statement again on a new session when a transaction
             // may have been open on the lost one, or when SQL changed its settings, which a new
             // session does not have. The client may already have opened a replacement (the
@@ -1095,7 +1107,7 @@ export class HardchargerConnection {
             const transaction = this.mayHoldTransaction;
             this.mayHoldTransaction = false;
             this.mayHoldSettings = false;
-            if ((err as HardchargerError).replacementSessionId === undefined) await this.reset();
+            if ((err as HardchargerError).replacementSessionId === undefined || isSignInRevoked(err)) await this.reset();
             this.log(
               `[hardcharger-mcp] connection lost (${errorCode(err)}) with ` +
                 `${transaction ? "a transaction possibly open" : "session settings set by SQL"}; not retried`,
@@ -1107,7 +1119,7 @@ export class HardchargerConnection {
             this.mayHoldTransaction = false;
             this.mayHoldSettings = false;
           }
-          if (attempt < 2 && isConnectionLost(err)) {
+          if (attempt < 2 && lost) {
             this.log(
               `[hardcharger-mcp] connection lost (${errorCode(err)}), reconnecting: ${this.redact(err instanceof Error ? err.message : String(err))}`,
             );

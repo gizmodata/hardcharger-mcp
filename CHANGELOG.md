@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.2] - 2026-11-07
+
+### Fixed
+- After a person stopped a GizmoData Cloud cluster, the next tool call on a connection opened
+  before the Stop failed with `invalid_token` (`token_revoked`) until the person's session went
+  idle: the holder refuses tokens issued before a Stop, and the connection never signed in again.
+  The call now drops that connection and opens a new one, which signs in fresh (starting the
+  cluster, as connecting again does) and runs the call, once; a second refusal is the error. As for
+  a lost connection, a transaction possibly open or settings set by SQL make it an error instead
+  (`TransactionLostError`, `SettingsLostError`). Idle cleanup and listing still never connect.
+
 ## [2.4.1] - 2026-11-07
 
 ### Added

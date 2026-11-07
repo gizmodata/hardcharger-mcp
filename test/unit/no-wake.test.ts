@@ -246,3 +246,72 @@ describe("a stopped cluster (lazy connect)", () => {
     await conn.close();
   });
 });
+
+// After a person's Stop, the holder refuses every token issued before it (token_revoked). A tool
+// call is the person's own request: the cached connection is dropped and a new one, signed in
+// fresh, runs it (which starts the cluster), once.
+function revokingServer() {
+  let tokens = 0;
+  const revoked = new Set<string>();
+  const seen: string[] = [];
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    const method = init?.method ?? "GET";
+    const auth = new Headers(init?.headers).get("authorization")?.replace(/^Bearer /u, "");
+    seen.push(`${method} ${url.pathname}${auth ? ` ${auth}` : ""}`);
+    if (url.pathname === "/chargewire") {
+      return json(200, { protocol: "chargewire", protocol_versions: ["1"], capabilities: [], auth: { grant_types: ["password"] } });
+    }
+    if (url.pathname.endsWith("/auth/token")) return json(200, { access_token: `t${++tokens}`, token_type: "Bearer", expires_in: 3600 });
+    if (auth !== undefined && revoked.has(auth)) {
+      return json(401, { status: 401, code: "invalid_token", reason: "token_revoked", detail: "fake: stopped by a person" });
+    }
+    if (method === "POST" && url.pathname.endsWith("/sessions")) {
+      return json(201, { session_id: `s${tokens}`, options: {}, transaction: "none", idle_timeout_s: 900 });
+    }
+    if (method === "DELETE") return new Response(null, { status: 204 });
+    const body = typeof init?.body === "string" ? init.body : init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : "";
+    if (url.pathname.endsWith("/statements") && body.includes("AS answer")) {
+      return json(200, { statement_id: "q1", state: "succeeded", result: { kind: "update", rows_affected: 0 } });
+    }
+    return json(400, { status: 400, code: "invalid_argument", detail: "fake" }); // the settings probe
+  }) as typeof fetch;
+  return { fetchImpl, seen, revoked, signIns: () => tokens };
+}
+
+describe("a sign-in revoked by a person's Stop", () => {
+  const connection = (server: ReturnType<typeof revokingServer>) =>
+    new HardchargerConnection(parseConfig(ENV).connections[0]!, () => undefined, {
+      connect: (options) => hardchargerConnect({ ...options, fetch: server.fetchImpl }),
+    });
+
+  it("the tool call drops the cached connection, signs in fresh once, and runs", async () => {
+    const server = revokingServer();
+    const conn = connection(server);
+    await conn.run((c) => c.execute("SELECT 42 AS answer"));
+    assert.equal(server.signIns(), 1);
+    server.revoked.add("t1"); // Stop, then a person's next query
+    await conn.run((c) => c.execute("SELECT 42 AS answer"));
+    assert.equal(server.signIns(), 2);
+    assert.equal(conn.reconnects, 1);
+    assert.ok(server.seen.includes("POST /chargewire/v1/sessions/s2/statements t2"), server.seen.join("\n"));
+    await conn.close();
+  });
+
+  it("a second refusal is reported, not retried again", async () => {
+    const server = revokingServer();
+    const conn = connection(server);
+    await conn.run((c) => c.execute("SELECT 42 AS answer"));
+    server.revoked.add("t1");
+    server.revoked.add("t2"); // the fresh sign-in's token is refused too
+    await assert.rejects(
+      conn.run((c) => c.execute("SELECT 42 AS answer")),
+      (e: unknown) => (e as { code?: string; reason?: string }).code === "invalid_token" && (e as { reason?: string }).reason === "token_revoked",
+    );
+    assert.equal(server.signIns(), 2);
+    assert.equal(conn.reconnects, 1);
+    await conn.close();
+  });
+});
