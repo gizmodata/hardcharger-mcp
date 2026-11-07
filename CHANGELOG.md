@@ -12,10 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Connecting to a GizmoData Cloud cluster that is stopped (auto-resume) no longer starts it: the
   client connects lazily when the server's stand-in says it is stopped, and signs in at the first
-  query or statement (from `@gizmodata/hardcharger` 2.4.2 on `@gizmodata/chargewire` 2.3.3).
+  query or statement (from `@gizmodata/hardcharger` 2.4.3 on `@gizmodata/chargewire` 2.3.4).
   This server's own connection setup (the default catalog and schema, the server-settings probe)
-  then runs at that first query, before it; a wrong password or an unreachable server is that
-  query's error, not a warning about the default catalog.
+  then runs at that first query, before it, and never signs in by itself; a wrong password or an
+  unreachable server is that query's error, not a warning about the default catalog, and a default
+  catalog or schema the server refuses is the same warning as on a running server.
 
 ### Fixed
 - Listing and describing never sign in to a server or open a session there, so they never start a
@@ -26,13 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in to every configured server). `list_connections` asks only the broker, as before.
 - Closing a person's idle session (after `HARDCHARGER_MCP_SESSION_IDLE_SECONDS`), and closing a
   connection, no longer signs in first when the token is close to expiring (from
-  `@gizmodata/hardcharger` 2.4.2 on `@gizmodata/chargewire` 2.3.3, whose cancels, `transaction()`
+  `@gizmodata/hardcharger` 2.4.3 on `@gizmodata/chargewire` 2.3.4, whose cancels, `transaction()`
   clean-up and progress polls never sign in either). Before, an idle eviction late in a token's
   life sent a sign-in that woke the stopped cluster for nobody.
 
 ### Changed
-- Built on `@gizmodata/hardcharger` 2.4.2 (hardcharger-js `372c798`) and `@gizmodata/chargewire`
-  2.3.3 (chargewire-js `ca7940a`); the dependency range is `^2.4.2`.
+- Built on `@gizmodata/hardcharger` 2.4.3 (hardcharger-js `790b731`) and `@gizmodata/chargewire`
+  2.3.4 (chargewire-js `ce05df6`); the dependency range is `^2.4.3`.
 
 ## [2.4.0] - 2026-11-05
 

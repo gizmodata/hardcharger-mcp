@@ -383,6 +383,9 @@ describe("hardcharger-mcp tools against hardcharger-server", () => {
 
       await failsWith(multi, "run_query", { sql: "SELECT 1", connection: "nope" }, /Unknown connection "nope"\. Available connections: primary, alt, third/);
 
+      // Tables are listed only for connections in use (listing never signs in): use "third" first.
+      assert.equal((await multi.listResources()).resources.some((r) => r.uri.startsWith("hardcharger://third/")), false);
+      await ok(multi, "run_query", { sql: "SELECT 1", connection: "third" });
       const resources = (await multi.listResources()).resources;
       const mine = resources.find((r) => r.uri === "hardcharger://third/schema/memory/main/mcp_it");
       assert.ok(mine);

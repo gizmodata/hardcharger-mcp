@@ -141,7 +141,7 @@ describe("closing an idle session never signs in", () => {
 });
 
 // A stand-in for a stopped server (GizmoData Cloud's resume holder): discovery says "stopped".
-function stoppedServer(options: { password?: "wrong" } = {}) {
+function stoppedServer(options: { password?: "wrong"; refuseSchema?: boolean } = {}) {
   let tokens = 0;
   const seen: string[] = [];
   const json = (status: number, body: unknown) =>
@@ -167,7 +167,14 @@ function stoppedServer(options: { password?: "wrong" } = {}) {
     if (method === "POST" && url.pathname.endsWith("/sessions")) {
       return json(201, { session_id: "s1", options: {}, transaction: "none", idle_timeout_s: 900 });
     }
-    if (method === "PATCH") return json(200, { options: (JSON.parse(body) as { options: unknown }).options });
+    if (method === "PATCH") {
+      const asked = (JSON.parse(body) as { options: Record<string, unknown> }).options;
+      if (options.refuseSchema && "schema" in asked) {
+        return json(200, { options: {}, errors: { schema: { code: "invalid_option_value", detail: "no schema nope" } } });
+      }
+      return json(200, { options: asked, errors: {} });
+    }
+    if (url.pathname.endsWith("/metadata/catalogs")) return json(400, { status: 400, code: "invalid_argument", detail: "fake" });
     if (method === "DELETE") return new Response(null, { status: 204 });
     if (url.pathname.endsWith("/statements") && body.includes("AS answer")) {
       return json(200, { statement_id: "q1", state: "succeeded", result: { kind: "update", rows_affected: 0 } });
@@ -209,6 +216,20 @@ describe("a stopped cluster (lazy connect)", () => {
       "POST /chargewire/v1/sessions/s1/statements", // the query
     ]);
     assert.deepEqual(conn.sessionWarnings(), []);
+    await conn.close();
+  });
+
+  it("a default schema the server refuses is a warning, as when connecting eagerly, and the query runs", async () => {
+    const server = stoppedServer({ refuseSchema: true });
+    const config = parseConfig(STOPPED_ENV);
+    const conn = new HardchargerConnection(config.connections[0]!, () => undefined, {
+      connect: (options) => hardchargerConnect({ ...options, fetch: server.fetchImpl }),
+    });
+    await conn.run((c) => c.execute("SELECT 42 AS answer"));
+    assert.equal(conn.sessionWarnings().length, 1);
+    assert.match(conn.sessionWarnings()[0]!, /Default catalog\/schema could not be applied \(lake\.main\)/u);
+    assert.match(conn.sessionWarnings()[0]!, /invalid_option_value/u);
+    assert.equal(server.signIns(), 1);
     await conn.close();
   });
 

@@ -38,8 +38,8 @@ runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: 2.4.1, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.4.2 (hardcharger-js
-> `372c798`, on `@gizmodata/chargewire` 2.3.3, chargewire-js `ca7940a`, Chargewire protocol 1.0.0);
+> **Status: 2.4.1, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.4.3 (hardcharger-js
+> `790b731`, on `@gizmodata/chargewire` 2.3.4, chargewire-js `ce05df6`, Chargewire protocol 1.0.0);
 > tested against the image of Hardcharger's main branch and against Hardcharger 2.2.0, released
 > before the protocol was renamed to Chargewire.
 
