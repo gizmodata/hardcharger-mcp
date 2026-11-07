@@ -1131,7 +1131,20 @@ export class HardchargerConnection {
         }
       }
     };
-    const result = this.queue.then(task, task);
+    const guarded = async (): Promise<T> => {
+      try {
+        return await task();
+      } catch (err) {
+        // login_sso's token is used as is: after a person's Stop revoked it, only a new sign-in helps.
+        if (isSignInRevoked(err) && this.overrides.accessToken !== undefined) {
+          throw (err as HardchargerError).with({
+            message: `${(err as Error).message}; call login_sso to sign in again`,
+          });
+        }
+        throw err;
+      }
+    };
+    const result = this.queue.then(guarded, guarded);
     this.queue = result.catch(() => undefined);
     return result;
   }
