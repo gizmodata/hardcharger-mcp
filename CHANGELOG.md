@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-11-07
+
+### Fixed
+- A new connection handed a token from before a person's Stop (by a provider's or a single
+  sign-on's cache) signs in again once with its own method instead of failing its first request
+  (from `@gizmodata/hardcharger` 2.4.4 on `@gizmodata/chargewire` 2.3.5).
+- A `login_sso` token, which is used as is, that a person's Stop revoked now fails with an error
+  that says the token was revoked (for instance issued before the cluster was stopped) and to call
+  `login_sso` to sign in again.
+
+### Changed
+- Built on `@gizmodata/hardcharger` 2.4.4 (hardcharger-js `a49a2a2`) and `@gizmodata/chargewire`
+  2.3.5 (chargewire-js `36352f4`); the dependency range is `^2.4.4`.
+
 ## [2.4.2] - 2026-11-07
 
 ### Fixed

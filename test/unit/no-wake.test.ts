@@ -253,6 +253,7 @@ describe("a stopped cluster (lazy connect)", () => {
 function revokingServer() {
   let tokens = 0;
   const revoked = new Set<string>();
+  let revokeAll = false;
   const seen: string[] = [];
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -265,7 +266,7 @@ function revokingServer() {
       return json(200, { protocol: "chargewire", protocol_versions: ["1"], capabilities: [], auth: { grant_types: ["password"] } });
     }
     if (url.pathname.endsWith("/auth/token")) return json(200, { access_token: `t${++tokens}`, token_type: "Bearer", expires_in: 3600 });
-    if (auth !== undefined && revoked.has(auth)) {
+    if (auth !== undefined && (revokeAll || revoked.has(auth))) {
       return json(401, { status: 401, code: "invalid_token", reason: "token_revoked", detail: "fake: stopped by a person" });
     }
     if (method === "POST" && url.pathname.endsWith("/sessions")) {
@@ -278,7 +279,15 @@ function revokingServer() {
     }
     return json(400, { status: 400, code: "invalid_argument", detail: "fake" }); // the settings probe
   }) as typeof fetch;
-  return { fetchImpl, seen, revoked, signIns: () => tokens };
+  return {
+    fetchImpl,
+    seen,
+    revoked,
+    signIns: () => tokens,
+    revokeEverything: () => {
+      revokeAll = true;
+    },
+  };
 }
 
 describe("a sign-in revoked by a person's Stop", () => {
@@ -300,18 +309,34 @@ describe("a sign-in revoked by a person's Stop", () => {
     await conn.close();
   });
 
+  it("a login_sso token (used as is) that was revoked says to call login_sso again", async () => {
+    const server = revokingServer();
+    const conn = connection(server);
+    await conn.useCredentials({ accessToken: "sso-token" });
+    server.revoked.add("sso-token");
+    await assert.rejects(
+      conn.run((c) => c.execute("SELECT 42 AS answer")),
+      (e: unknown) =>
+        (e as { reason?: string }).reason === "token_revoked" &&
+        /issued before the server was stopped/u.test((e as Error).message) &&
+        /call login_sso to sign in again/u.test((e as Error).message),
+    );
+    assert.equal(server.signIns(), 0);
+    await conn.close();
+  });
+
   it("a second refusal is reported, not retried again", async () => {
     const server = revokingServer();
     const conn = connection(server);
     await conn.run((c) => c.execute("SELECT 42 AS answer"));
-    server.revoked.add("t1");
-    server.revoked.add("t2"); // the fresh sign-in's token is refused too
+    server.revokeEverything(); // every token is refused, fresh sign-ins included
     await assert.rejects(
       conn.run((c) => c.execute("SELECT 42 AS answer")),
       (e: unknown) => (e as { code?: string; reason?: string }).code === "invalid_token" && (e as { reason?: string }).reason === "token_revoked",
     );
-    assert.equal(server.signIns(), 2);
+    // One reconnect here; the new connection's own client signs in again once (chargewire 2.3.5).
     assert.equal(conn.reconnects, 1);
+    assert.equal(server.signIns(), 3);
     await conn.close();
   });
 });
