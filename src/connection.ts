@@ -919,7 +919,12 @@ export class HardchargerConnection {
     return options;
   }
 
-  /** Opens a fresh client and applies the session settings. */
+  /**
+   * Opens a fresh client and applies the session settings. To a stopped server (GizmoData Cloud
+   * auto-resume) the client connects lazily, sending only discovery; the settings below are then
+   * its first requests, which sign in and start the server. open() runs only for a call that does
+   * work (run), so listing and closing never get here.
+   */
   private async open(): Promise<Connection> {
     if (this.overrides.accessToken === undefined && authMethod(this.config) === "none") {
       throw new Error(
@@ -960,6 +965,9 @@ export class HardchargerConnection {
     try {
       await client.setOptions(options);
     } catch (err) {
+      // Connected lazily to a stopped server, this is the first request: a failure that left no
+      // session (a wrong password, an unreachable server) is the call's error, not a warning.
+      if (client.sessionId === "") throw err;
       const msg = this.redact(err instanceof Error ? err.message : String(err));
       let available = "";
       try {
@@ -995,6 +1003,7 @@ export class HardchargerConnection {
       }
       this.serverSettings = found;
     } catch (err) {
+      if (client.sessionId === "") throw err; // the first request of a lazy connection: see above
       this.serverSettings = null;
       this.log(`[hardcharger-mcp] server settings unavailable: ${this.redact(err instanceof Error ? err.message : String(err))}`);
     }

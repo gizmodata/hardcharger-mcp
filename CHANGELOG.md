@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Connecting to a GizmoData Cloud cluster that is stopped (auto-resume) no longer starts it: the
   client connects lazily when the server's stand-in says it is stopped, and signs in at the first
   query or statement (from `@gizmodata/hardcharger` 2.4.2 on `@gizmodata/chargewire` 2.3.3).
+  This server's own connection setup (the default catalog and schema, the server-settings probe)
+  then runs at that first query, before it; a wrong password or an unreachable server is that
+  query's error, not a warning about the default catalog.
 
 ### Fixed
 - Listing and describing never sign in to a server or open a session there, so they never start a

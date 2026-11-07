@@ -139,3 +139,89 @@ describe("closing an idle session never signs in", () => {
     await store.close();
   });
 });
+
+// A stand-in for a stopped server (GizmoData Cloud's resume holder): discovery says "stopped".
+function stoppedServer(options: { password?: "wrong" } = {}) {
+  let tokens = 0;
+  const seen: string[] = [];
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string" ? init.body : init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : "";
+    seen.push(`${method} ${url.pathname}${method === "PATCH" ? ` ${body}` : ""}`);
+    if (url.pathname === "/chargewire") {
+      return json(200, {
+        protocol: "chargewire",
+        protocol_versions: ["1"],
+        capabilities: [],
+        auth: { grant_types: ["password"] },
+        state: "stopped",
+      });
+    }
+    if (url.pathname.endsWith("/auth/token")) {
+      if (options.password === "wrong") return json(401, { status: 401, code: "invalid_credentials", detail: "fake" });
+      return json(200, { access_token: `t${++tokens}`, token_type: "Bearer", expires_in: 3600 });
+    }
+    if (method === "POST" && url.pathname.endsWith("/sessions")) {
+      return json(201, { session_id: "s1", options: {}, transaction: "none", idle_timeout_s: 900 });
+    }
+    if (method === "PATCH") return json(200, { options: (JSON.parse(body) as { options: unknown }).options });
+    if (method === "DELETE") return new Response(null, { status: 204 });
+    if (url.pathname.endsWith("/statements") && body.includes("AS answer")) {
+      return json(200, { statement_id: "q1", state: "succeeded", result: { kind: "update", rows_affected: 0 } });
+    }
+    // The server-settings probe: refused, which the connection tolerates once signed in.
+    return json(400, { status: 400, code: "invalid_argument", detail: "fake" });
+  }) as typeof fetch;
+  return { fetchImpl, seen, signIns: () => seen.filter((s) => s.endsWith("/auth/token")).length };
+}
+
+const STOPPED_ENV = {
+  HARDCHARGER_URI: "hardcharger://stopped.test.invalid",
+  HARDCHARGER_USERNAME: "u",
+  HARDCHARGER_PASSWORD: "unit-test-secret",
+  HARDCHARGER_DEFAULT_CATALOG: "lake",
+  HARDCHARGER_DEFAULT_SCHEMA: "main",
+};
+
+describe("a stopped cluster (lazy connect)", () => {
+  it("connecting sends only discovery; the first query signs in, opens the session, applies the setup, then runs", async () => {
+    const server = stoppedServer();
+    const config = parseConfig(STOPPED_ENV);
+    let atConnect: string[] = [];
+    const conn = new HardchargerConnection(config.connections[0]!, () => undefined, {
+      connect: async (options) => {
+        const client = await hardchargerConnect({ ...options, fetch: server.fetchImpl });
+        atConnect = [...server.seen];
+        return client;
+      },
+    });
+    await conn.run((c) => c.execute("SELECT 42 AS answer"));
+    assert.deepEqual(atConnect, ["GET /chargewire"]);
+    assert.deepEqual(server.seen.slice(0, 6), [
+      "GET /chargewire",
+      "POST /chargewire/v1/auth/token",
+      "POST /chargewire/v1/sessions",
+      'PATCH /chargewire/v1/sessions/s1 {"options":{"catalog":"lake","schema":"main"}}',
+      "POST /chargewire/v1/sessions/s1/statements", // the server-settings probe
+      "POST /chargewire/v1/sessions/s1/statements", // the query
+    ]);
+    assert.deepEqual(conn.sessionWarnings(), []);
+    await conn.close();
+  });
+
+  it("a wrong password is the first query's error, from one sign-in, not a setup warning", async () => {
+    const server = stoppedServer({ password: "wrong" });
+    const config = parseConfig(STOPPED_ENV);
+    const conn = new HardchargerConnection(config.connections[0]!, () => undefined, {
+      connect: (options) => hardchargerConnect({ ...options, fetch: server.fetchImpl }),
+    });
+    await assert.rejects(conn.run((c) => c.execute("SELECT 42 AS answer")), (e: unknown) => (e as { code?: string }).code === "invalid_credentials");
+    assert.equal(server.signIns(), 1, server.seen.join("\n"));
+    assert.deepEqual(conn.sessionWarnings(), []);
+    assert.equal(conn.connectedAt, null);
+    await conn.close();
+  });
+});
