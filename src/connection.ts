@@ -706,6 +706,11 @@ export const SERVER_SETTINGS_OF_INTEREST = [
   "hardcharger.cluster_id",
 ] as const;
 
+/** A refused `catalog` or `schema` session option (the client's `session option "…"` error). */
+function isSearchPathRefusal(err: unknown): boolean {
+  return err instanceof Error && /^session option "(catalog|schema)"/u.test(err.message);
+}
+
 export interface ConnectionHooks {
   /** Test hook: opens the client connection (defaults to `connect` from @gizmodata/hardcharger). */
   connect?: (options: ConnectOptions) => Promise<Connection>;
@@ -919,7 +924,12 @@ export class HardchargerConnection {
     return options;
   }
 
-  /** Opens a fresh client and applies the session settings. */
+  /**
+   * Opens a fresh client and applies the session settings. To a stopped server (GizmoData Cloud
+   * auto-resume) the client connects lazily, sending only discovery; the settings below are then
+   * its first requests, which sign in and start the server. open() runs only for a call that does
+   * work (run), so listing and closing never get here.
+   */
   private async open(): Promise<Connection> {
     if (this.overrides.accessToken === undefined && authMethod(this.config) === "none") {
       throw new Error(
@@ -958,28 +968,38 @@ export class HardchargerConnection {
     if (this.searchPath.schema) options.schema = this.searchPath.schema;
     if (Object.keys(options).length === 0) return;
     try {
+      // Connected lazily to a stopped server, the client keeps these until its first request
+      // (the probe below) and sends them right after creating the session.
       await client.setOptions(options);
     } catch (err) {
-      const msg = this.redact(err instanceof Error ? err.message : String(err));
-      let available = "";
-      try {
-        const catalogs = await client.metadata.catalogs();
-        const names: string[] = [];
-        for (let i = 0; i < catalogs.numRows; i++) names.push(String(catalogs.getChild("catalog_name")?.get(i)));
-        available = ` Available catalogs: ${names.join(", ")}.`;
-      } catch {
-        // best effort
-      }
-      const wanted = [this.searchPath.catalog, this.searchPath.schema].filter(Boolean).join(".");
-      this.warnings.push(
-        `Default catalog/schema could not be applied (${wanted}); the server's own default is in effect.${available} ${msg}`,
-      );
-      this.log(`[hardcharger-mcp] warning: ${this.warnings[this.warnings.length - 1]}`);
+      // A failure that left no session (a wrong password, an unreachable server) is the call's
+      // error, not a warning.
+      if (client.sessionId === "") throw err;
+      await this.searchPathWarning(client, err);
     }
   }
 
+  /** Records that the default catalog/schema could not be applied (with the catalogs there are). */
+  private async searchPathWarning(client: Connection, err: unknown): Promise<void> {
+    const msg = this.redact(err instanceof Error ? err.message : String(err));
+    let available = "";
+    try {
+      const catalogs = await client.metadata.catalogs();
+      const names: string[] = [];
+      for (let i = 0; i < catalogs.numRows; i++) names.push(String(catalogs.getChild("catalog_name")?.get(i)));
+      available = ` Available catalogs: ${names.join(", ")}.`;
+    } catch {
+      // best effort
+    }
+    const wanted = [this.searchPath.catalog, this.searchPath.schema].filter(Boolean).join(".");
+    this.warnings.push(
+      `Default catalog/schema could not be applied (${wanted}); the server's own default is in effect.${available} ${msg}`,
+    );
+    this.log(`[hardcharger-mcp] warning: ${this.warnings[this.warnings.length - 1]}`);
+  }
+
   /** Reads the server's startup settings once per connection; never fails the connection. */
-  private async probeServerSettings(client: Connection): Promise<void> {
+  private async probeServerSettings(client: Connection, retried = false): Promise<void> {
     const names = SERVER_SETTINGS_OF_INTEREST.map((n) => `'${n}'`).join(", ");
     try {
       const table = await client.query(`SELECT name, value FROM hardcharger_settings() WHERE name IN (${names})`);
@@ -995,6 +1015,13 @@ export class HardchargerConnection {
       }
       this.serverSettings = found;
     } catch (err) {
+      if (client.sessionId === "") throw err; // the first request of a lazy connection: see above
+      if (!retried && isSearchPathRefusal(err)) {
+        // A lazy connection's default catalog/schema went with this first request and was refused:
+        // the same warning as when connecting eagerly, then the probe again.
+        await this.searchPathWarning(client, err);
+        return this.probeServerSettings(client, true);
+      }
       this.serverSettings = null;
       this.log(`[hardcharger-mcp] server settings unavailable: ${this.redact(err instanceof Error ? err.message : String(err))}`);
     }

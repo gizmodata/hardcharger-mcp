@@ -138,6 +138,8 @@ describe("hosted HTTP sessions", () => {
 
     const conn = await call(alice, "use_connection", { name: "second" });
     assert.equal(conn.isError, undefined, textOf(conn));
+    // server_info never connects: a query on "second" does.
+    assert.equal((await call(alice, "run_query", { sql: "SELECT 1" })).isError, undefined);
     const aliceInfo = (await call(alice, "server_info")).structuredContent as Record<string, unknown>;
     const bobInfo = (await call(bob, "server_info")).structuredContent as Record<string, unknown>;
     assert.equal(aliceInfo.current_connection, "second");

@@ -210,6 +210,8 @@ describe("connection broker: per-person identity", () => {
   });
 
   const whoAmI = async (client: Client, connection?: string) => {
+    // server_info never connects: a query does.
+    await ok(client, "run_query", connection ? { sql: "SELECT 1", connection } : { sql: "SELECT 1" });
     const info = await ok<{ user: string; auth_method: string; authenticated_user: string }>(
       client,
       "server_info",

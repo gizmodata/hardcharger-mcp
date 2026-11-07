@@ -308,11 +308,6 @@ export class BrokeredRegistry extends ConnectionRegistry {
     return this.emptyMessage ?? "You have no Hardcharger servers to connect to.";
   }
 
-  /** Only servers this caller already uses: listing every table would sign in to every server they can reach. */
-  override resourceConnections() {
-    return this.all().filter((c) => c.connectedAt !== null);
-  }
-
   override secrets(): Array<string | undefined> {
     return [...super.secrets(), this.callerToken];
   }

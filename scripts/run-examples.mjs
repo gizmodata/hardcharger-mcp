@@ -157,11 +157,12 @@ async function tool(client, name, args = {}) {
 async function signedInAs(env, user, method) {
   const client = await stdioClient(env);
   try {
+    // server_info never connects: the query does, then server_info reports who signed in.
+    const one = (await tool(client, "run_query", { sql: "SELECT 42 AS answer" })).structured;
+    assert.deepEqual(one.rows, [[42]]);
     const info = (await tool(client, "server_info")).structured;
     assert.equal(info.user, user);
     assert.equal(info.auth_method, method);
-    const one = (await tool(client, "run_query", { sql: "SELECT 42 AS answer" })).structured;
-    assert.deepEqual(one.rows, [[42]]);
   } finally {
     await client.close();
   }
