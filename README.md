@@ -38,8 +38,8 @@ runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: 2.4.3, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.4.4 (hardcharger-js
-> `a49a2a2`, on `@gizmodata/chargewire` 2.3.5, chargewire-js `36352f4`, Chargewire protocol 1.0.0);
+> **Status: 2.5.0, with Hardcharger 2.13.0.** Built on `@gizmodata/hardcharger` 2.5.0 (hardcharger-js
+> `478c6c6`, on `@gizmodata/chargewire` 2.4.0, chargewire-js `30ed33b`, Chargewire protocol 1.0.0);
 > tested against the image of Hardcharger's main branch and against Hardcharger 2.2.0, released
 > before the protocol was renamed to Chargewire.
 
@@ -321,6 +321,7 @@ Only `HARDCHARGER_*` names are read.
 | `HARDCHARGER_TLS_SKIP_VERIFY` | `false` | Accept self-signed or untrusted certificates |
 | `HARDCHARGER_DEFAULT_CATALOG` | | Catalog for unqualified table names (optional) |
 | `HARDCHARGER_DEFAULT_SCHEMA` | | Schema for unqualified table names (optional) |
+| `HARDCHARGER_READ_ONLY` | `false` | Require server-enforced read-only sessions; also the default for additional and brokered connections |
 | `HARDCHARGER_ALLOW_WRITES` | `false` | Register `execute_statement` and let `run_query` run non-read statements |
 | `HARDCHARGER_MAX_ROWS` | `500` | Hard cap on rows returned by `run_query` |
 | `HARDCHARGER_MAX_CELL_CHARS` | `200` | Cells longer than this are truncated with `…` |
@@ -352,6 +353,36 @@ still starts and reports the problem (with the catalogs it found) in `server_inf
 has connected. In a chat,
 `use_schema` or a plain `USE catalog.schema` switches for the rest of the session.
 
+### Connection read-only enforcement and permitted writes
+
+Set `HARDCHARGER_READ_ONLY=true` to require read-only enforcement by Hardcharger. The
+connection requests it at session creation and confirms it before any setup query or tool
+query. Missing confirmation fails the connection. A replacement or reconnect must request
+and confirm the restriction again. Older servers without this feature return an error;
+ordinary connections with the option left off continue to work.
+
+This option is separate from `HARDCHARGER_ALLOW_WRITES`, which controls MCP tools and SQL
+filtering. With read-only enabled, write tools remain disabled even if allow-writes is true.
+Additional configured connections inherit the default; `HARDCHARGER_<KEY>_READ_ONLY` can
+override it for a particular connection. Brokered connections use the global setting.
+
+Read-write connections remain supported: leave `HARDCHARGER_READ_ONLY=false` and enable
+`HARDCHARGER_ALLOW_WRITES=true` when MCP should permit writes. Database grants still decide
+which changes the signed-in user may make. A single MCP instance can have both kinds of
+connection: for example, set the global read-only default to true and
+`HARDCHARGER_2_READ_ONLY=false` for an explicitly writable second connection.
+`list_connections` and `server_info` report `read_only_required` separately from `allow_writes`.
+The former describes the configured requirement, even before a lazy connection opens.
+
+| Read-only requirement | Allow writes | Behavior |
+| --- | --- | --- |
+| Off (default) | Off (default) | Existing MCP read filtering; no server read-only request |
+| Off | On | MCP permits writes, subject to database permissions |
+| On | Either | Requires server-confirmed read-only; MCP rejects writes |
+
+Read-only restricts SQL writes. It is not a sandbox for administrator-installed extension
+code and does not replace database permissions.
+
 ### 🔀 Multiple connections
 
 - **Claude Desktop extension.** The settings screen has two extra slots, *Connection 2* and
@@ -377,8 +408,8 @@ npx -y @gizmodata/hardcharger-mcp
 
 In a chat, `list_connections` shows what is configured, `use_connection` switches the default, and
 every tool accepts a per-call `connection` argument. Connections open lazily; the row cap, timeout
-and read-only settings apply to all of them, while each server's user privileges still govern what
-that connection may do.
+settings apply to all of them; the read-only requirement can be overridden per connection.
+Each server's user privileges still govern what that connection may do.
 
 ## 🛡️ Read-only model and security
 
@@ -507,7 +538,9 @@ anonymously over https.
 Releases follow [semantic versioning](https://semver.org) and [CHANGELOG.md](CHANGELOG.md): move the
 `[Unreleased]` entries into a `## [X.Y.Z] - YYYY-MM-DD` section, set the same version in
 `package.json`, `manifest.json` and `charts/hardcharger-mcp/Chart.yaml` (`version` and
-`appVersion`), commit, and push `main` and `vX.Y.Z` together. `release.yml` runs the full CI on the
+`appVersion`), then merge a pull request after its required checks pass. Fetch `origin/main`,
+verify its tree matches the tested candidate, and tag that exact landed commit `vX.Y.Z`.
+Push the release tag without moving it afterward. `release.yml` runs the full CI on the
 tagged commit, then makes a GitHub Release with the `.mcpb` bundles, their checksums, the Helm chart
 and the npm tarball, and the CHANGELOG section as notes. Publishing to npm (public; trusted
 publishing, OIDC) runs when the repository variable `NPM_PUBLISH_ENABLED` is `true`, after a check

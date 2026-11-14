@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-11-14
+
+### Added
+
+- `HARDCHARGER_READ_ONLY=true` requires an enforced read-only session, confirmed before
+  setup or queries and requested again on reconnect. Named connections can override the
+  default with `HARDCHARGER_<KEY>_READ_ONLY`; brokered connections inherit it. Read-only
+  connections disable write tools even when `HARDCHARGER_ALLOW_WRITES` is enabled.
+  The default remains off for compatibility with older servers.
+
+### Changed
+
+- Require published Hardcharger JavaScript 2.5.0 and pin its Chargewire 2.4.0 dependency for
+  development, CI and the desktop extension bundle.
+- Refresh runtime HTTP/URI dependencies within their existing version ranges: Hono 4.13.18,
+  `@hono/node-server` 2.1.8, `fast-uri` 3.1.9 and `body-parser` 2.4.0, addressing their
+  published security advisories.
+
 ## [2.4.3] - 2026-11-07
 
 ### Fixed

@@ -34,6 +34,8 @@ export interface ConnectionSummary {
   connected: boolean;
   /** Whether write statements are accepted on this connection (HARDCHARGER_ALLOW_WRITES and the broker's say). */
   allow_writes: boolean;
+  /** Configured requirement, including before the lazy connection is opened. */
+  read_only_required: boolean;
 }
 
 export interface RegistryOptions {
@@ -80,7 +82,7 @@ export class ConnectionRegistry {
     const kept = new Map<string, HardchargerConnection>();
     for (const c of next) {
       const existing = this.byName.get(c.name.toLowerCase());
-      if (existing && existing.config.id === c.id && existing.config.uri === c.uri) {
+      if (existing && existing.config.id === c.id && existing.config.uri === c.uri && Boolean(existing.config.readOnly) === Boolean(c.readOnly)) {
         // Same server: keep the session, take the broker's latest description and write setting.
         existing.config.label = c.label;
         existing.config.allowWrites = c.allowWrites;
@@ -151,7 +153,7 @@ export class ConnectionRegistry {
 
   /** Whether write statements may run on `conn`: HARDCHARGER_ALLOW_WRITES, and the broker's say for a brokered one. */
   allowsWrites(conn: HardchargerConnection): boolean {
-    return this.config.allowWrites && conn.config.allowWrites !== false;
+    return this.config.allowWrites && conn.config.allowWrites !== false && !conn.config.readOnly;
   }
 
   /** Whether any connection accepts writes (decides whether execute_statement is offered). */
@@ -192,6 +194,7 @@ export class ConnectionRegistry {
         current: c.config.name === this.currentName,
         connected: c.connectedAt !== null,
         allow_writes: this.allowsWrites(c),
+        read_only_required: c.config.readOnly === true,
       };
       if (c.config.id !== undefined) summary.id = c.config.id;
       if (c.config.label !== undefined) summary.label = c.config.label;

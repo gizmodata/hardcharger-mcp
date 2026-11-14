@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "hardcharger",
   "display_name": "Hardcharger",
-  "version": "2.4.3",
+  "version": "2.5.0",
   "description": "Query your Hardcharger™ (GizmoData™'s DuckDB 2.0 server) from Claude.",
   "long_description": "Connects Claude Desktop to a Hardcharger server over Chargewire (HTTPS) with the Hardcharger JavaScript client: pure JavaScript, no native driver, the same bundle on macOS, Windows and Linux.\n\nTools: list catalogs, schemas and tables; describe a table (columns, types, constraints, estimated rows); run parameterised SQL queries with row caps and server-side timeouts; explain a query; server info. Writes are disabled unless you enable them. A `hardcharger://{connection}/schema/{catalog}/{schema}/{table}` resource returns table DDL.\n\nSign in with a password, a signed sign-in token, a client certificate (mutual TLS), or your identity provider in the browser (login_sso). Up to three Hardcharger servers can be configured; every tool takes an optional connection argument and use_connection switches the default.\n\nThe server runs on your machine and connects directly to the Hardcharger host you configure (VPN / private networks work). Credentials are stored in your OS keychain by Claude Desktop and never appear in tool output or errors.",
   "author": {
@@ -38,6 +38,7 @@
         "HARDCHARGER_TLS_SKIP_VERIFY": "${user_config.tls_skip_verify}",
         "HARDCHARGER_DEFAULT_CATALOG": "${user_config.default_catalog}",
         "HARDCHARGER_DEFAULT_SCHEMA": "${user_config.default_schema}",
+        "HARDCHARGER_READ_ONLY": "${user_config.read_only}",
         "HARDCHARGER_ALLOW_WRITES": "${user_config.allow_writes}",
         "HARDCHARGER_MAX_ROWS": "${user_config.max_rows}",
         "HARDCHARGER_MAX_CELL_CHARS": "${user_config.max_cell_chars}",
@@ -209,6 +210,13 @@
       "type": "string",
       "title": "Default schema",
       "description": "Optional schema for unqualified table names. Leave blank for the server default.",
+      "required": false
+    },
+    "read_only": {
+      "type": "boolean",
+      "title": "Require read-only sessions",
+      "description": "Require the database server to enforce read-only sessions. Needs a server with read-only session support; older servers return an error.",
+      "default": false,
       "required": false
     },
     "allow_writes": {

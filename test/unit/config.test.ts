@@ -67,6 +67,34 @@ describe("parseConfig", () => {
     assert.equal(cfg.enableSso, false);
   });
 
+  it("read-only defaults off, applies to named connections, and disables write tools", () => {
+    assert.equal(first(base).readOnly, false);
+    const cfg = parseConfig({ ...base, HARDCHARGER_READ_ONLY: "true", HARDCHARGER_ALLOW_WRITES: "true",
+      HARDCHARGER_2_URI: "hardcharger://second", HARDCHARGER_2_USERNAME: "u", HARDCHARGER_2_PASSWORD: "p" });
+    assert.ok(cfg.connections.every((c) => c.readOnly));
+    const registry = new ConnectionRegistry(cfg);
+    assert.equal(registry.anyAllowsWrites(), false);
+    assert.throws(() => parseConfig({ ...base, HARDCHARGER_READ_ONLY: "maybe" }), ConfigError);
+  });
+
+  it("keeps an explicitly writable connection alongside a read-only connection", () => {
+    const cfg = parseConfig({ ...base, HARDCHARGER_READ_ONLY: "true", HARDCHARGER_ALLOW_WRITES: "true",
+      HARDCHARGER_2_URI: "hardcharger://second", HARDCHARGER_2_USERNAME: "u", HARDCHARGER_2_PASSWORD: "p",
+      HARDCHARGER_2_READ_ONLY: "false" });
+    const registry = new ConnectionRegistry(cfg);
+    assert.deepEqual(registry.all().map((c) => registry.allowsWrites(c)), [false, true]);
+    assert.equal(registry.anyAllowsWrites(), true);
+    assert.deepEqual(registry.summaries().map((c) => [c.read_only_required, c.allow_writes]), [[true, false], [false, true]]);
+    cfg.allowWrites = false;
+    assert.equal(registry.anyAllowsWrites(), false);
+  });
+
+  it("retains opt-in writes without requiring a read-only-capable server", () => {
+    const registry = new ConnectionRegistry(parseConfig({ ...base, HARDCHARGER_ALLOW_WRITES: "true" }));
+    assert.equal(registry.configFor().readOnly, false);
+    assert.equal(registry.allowsWrites(registry.get()), true);
+  });
+
   it("parses overrides", () => {
     const cfg = parseConfig({
       HARDCHARGER_URI: "hardcharger://h:31338?tls=false",

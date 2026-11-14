@@ -55,6 +55,8 @@ export interface ConnectionConfig {
   /** CA bundle (PEM file path) that verifies the server's certificate, for a private CA. */
   tlsRootsFile?: string;
   tlsSkipVerify: boolean;
+  /** Require an enforced read-only server session; false preserves older-server compatibility. */
+  readOnly?: boolean;
   /** Catalog to use at session start (optional). */
   defaultCatalog?: string;
   /** Schema to use at session start (optional). */
@@ -81,6 +83,8 @@ export interface ConnectionConfig {
 export interface McpConfig {
   connections: ConnectionConfig[];
   allowWrites: boolean;
+  /** Default for configured connections, also applied to brokered connections. */
+  readOnly?: boolean;
   maxRows: number;
   maxCellChars: number;
   queryTimeoutSeconds: number;
@@ -209,7 +213,7 @@ function parseConnection(
   env: NodeJS.ProcessEnv,
   prefix: string,
   defaultName: string,
-  globals: { queryTimeoutSeconds: number; resumeTimeoutSeconds: number; enableSso: boolean },
+  globals: { queryTimeoutSeconds: number; resumeTimeoutSeconds: number; enableSso: boolean; readOnly: boolean },
 ): ConnectionConfig | null {
   const v = (suffix: string) => env[`${prefix}${suffix}`];
   const rawUri = nonEmpty(v("URI"));
@@ -266,6 +270,7 @@ function parseConnection(
     mtlsKeyFile,
     tlsRootsFile,
     tlsSkipVerify: parseBoolean(`${prefix}TLS_SKIP_VERIFY`, v("TLS_SKIP_VERIFY"), false),
+    readOnly: parseBoolean(`${prefix}READ_ONLY`, v("READ_ONLY"), globals.readOnly),
     defaultCatalog: nonEmpty(v("DEFAULT_CATALOG")),
     defaultSchema: nonEmpty(v("DEFAULT_SCHEMA")),
     queryTimeoutSeconds: globals.queryTimeoutSeconds,
@@ -299,7 +304,8 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): McpConfig {
     DEFAULTS.resumeTimeoutSeconds,
     { min: 0, max: 3600 },
   );
-  const globals = { queryTimeoutSeconds, resumeTimeoutSeconds, enableSso };
+  const readOnly = parseBoolean("HARDCHARGER_READ_ONLY", env.HARDCHARGER_READ_ONLY, false);
+  const globals = { queryTimeoutSeconds, resumeTimeoutSeconds, enableSso, readOnly };
 
   const connections: ConnectionConfig[] = [];
   const primary = parseConnection(
@@ -367,6 +373,7 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): McpConfig {
 
   return {
     connections,
+    readOnly,
     allowWrites: parseBoolean("HARDCHARGER_ALLOW_WRITES", env.HARDCHARGER_ALLOW_WRITES, false),
     maxRows: parseInteger("HARDCHARGER_MAX_ROWS", env.HARDCHARGER_MAX_ROWS, DEFAULTS.maxRows, { min: 1, max: 100000 }),
     maxCellChars: parseInteger("HARDCHARGER_MAX_CELL_CHARS", env.HARDCHARGER_MAX_CELL_CHARS, DEFAULTS.maxCellChars, {
@@ -915,6 +922,7 @@ export class HardchargerConnection {
         );
       },
     };
+    if (cfg.readOnly) options.sessionOptions = { read_only: true };
     const tls = this.tlsOptions();
     if (tls !== undefined) options.tls = tls;
     if (this.overrides.accessToken !== undefined) {
@@ -960,10 +968,22 @@ export class HardchargerConnection {
       }
       throw err;
     }
-    await this.applySessionSettings(client);
-    await this.probeServerSettings(client);
-    this.connectedAt = new Date();
-    return client;
+    try {
+      if (this.config.readOnly) {
+        // Force a lazy session to confirm before setup queries or search-path warnings.
+        const session = await client.getSession();
+        if (session.options?.read_only !== true) {
+          throw new Error("The server did not confirm read_only=true; this connection requires read-only sessions.");
+        }
+      }
+      await this.applySessionSettings(client);
+      await this.probeServerSettings(client);
+      this.connectedAt = new Date();
+      return client;
+    } catch (err) {
+      try { await client.close(); } catch { /* best effort */ }
+      throw err;
+    }
   }
 
   /**

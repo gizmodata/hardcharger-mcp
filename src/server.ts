@@ -57,7 +57,8 @@ function instructions(registry: ConnectionRegistry, transport: "stdio" | "http",
       "list_catalogs / list_schemas / list_tables / describe_table to discover the schema, then use run_query for SELECT " +
       "queries. Results are capped at a configurable number of rows; use LIMIT, aggregation, or WHERE filters to keep " +
       "results small. Bind user-supplied literals with ? placeholders and the params argument instead of interpolating " +
-      "them into SQL. A connection accepts writes only where list_connections shows allow_writes; before running a " +
+      "them into SQL. list_connections shows read_only_required for connections that require server enforcement. " +
+      "A connection accepts writes only where list_connections shows allow_writes; before running a " +
       "write, say what it will change and get the user's confirmation."
     );
   }
@@ -66,8 +67,10 @@ function instructions(registry: ConnectionRegistry, transport: "stdio" | "http",
     "Start with list_catalogs / list_schemas / list_tables / describe_table to discover the schema, then " +
     "use run_query for SELECT queries. Results are capped at a configurable number of rows; use LIMIT, " +
     "aggregation, or WHERE filters to keep results small. Bind user-supplied literals with ? placeholders " +
-    "and the params argument instead of interpolating them into SQL. Unless HARDCHARGER_ALLOW_WRITES is " +
-    "enabled the server is read-only. Unqualified table names resolve against the session's current " +
+    "and the params argument instead of interpolating them into SQL. list_connections shows read_only_required " +
+    "for connections that require server enforcement, and allow_writes for connections where MCP accepts writes. " +
+    "Writes require HARDCHARGER_ALLOW_WRITES and a connection without the read-only requirement; database " +
+    "permissions still apply. Unqualified table names resolve against the session's current " +
     "catalog and schema (see server_info); use use_schema or fully qualified names to work elsewhere." +
     scope +
     (multi
@@ -311,7 +314,7 @@ export function createServer(ctx: ServerContext): McpServer {
       title: "List connections",
       description:
         "Lists the configured Hardcharger connections (name, host, auth method, default catalog/schema, whether " +
-        "writes are accepted) and which one is current. Credentials are never returned.",
+        "server-enforced read-only sessions are required, whether writes are accepted) and which one is current. Credentials are never returned.",
       inputSchema: jsonSchema2020({}),
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -330,6 +333,7 @@ export function createServer(ctx: ServerContext): McpServer {
           "default catalog",
           "default schema",
           "writes",
+          "read-only required",
           "current",
         ],
         rows.map((r) => [
@@ -342,6 +346,7 @@ export function createServer(ctx: ServerContext): McpServer {
           escapeMarkdownCell(r.default_catalog ?? ""),
           escapeMarkdownCell(r.default_schema ?? ""),
           r.allow_writes ? "yes" : "no",
+          r.read_only_required ? "yes" : "no",
           r.current ? "✓" : "",
         ]),
       );
@@ -836,6 +841,7 @@ export function createServer(ctx: ServerContext): McpServer {
         current_catalog: currentCatalog,
         current_schema: currentSchema,
         allow_writes: registry.allowsWrites(connection),
+        read_only_required: cfg.readOnly === true,
         max_rows: config.maxRows,
         max_cell_chars: config.maxCellChars,
         query_timeout_seconds: config.queryTimeoutSeconds,

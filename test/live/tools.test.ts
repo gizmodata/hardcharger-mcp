@@ -73,6 +73,47 @@ describe("hardcharger-mcp tools against hardcharger-server", () => {
     assert.equal(exec.annotations?.destructiveHint, true);
   });
 
+  it("permits writes on an opted-in connection while another requires read-only", async () => {
+    const mixed = await stdioClient({
+      ...passwordSettings(server), HARDCHARGER_NAME: "reader", HARDCHARGER_READ_ONLY: "true",
+      HARDCHARGER_ALLOW_WRITES: "true", HARDCHARGER_2_NAME: "writer", HARDCHARGER_2_URI: server.uri,
+      HARDCHARGER_2_USERNAME: adminUsername, HARDCHARGER_2_PASSWORD: server.password,
+      HARDCHARGER_2_READ_ONLY: "false",
+    });
+    try {
+      const listed = await ok<{ connections: Array<{ name: string; read_only_required: boolean; allow_writes: boolean }> }>(mixed, "list_connections");
+      assert.deepEqual(listed.connections.map((c) => [c.name, c.read_only_required, c.allow_writes]),
+        [["reader", true, false], ["writer", false, true]]);
+      assert.ok((await mixed.listTools()).tools.some((t) => t.name === "execute_statement"));
+      await failsWith(mixed, "execute_statement", { connection: "reader", sql: "CREATE TABLE mcp_reader_write (id INTEGER)" }, /does not accept writes/u);
+      await ok(mixed, "execute_statement", { connection: "writer", sql: "CREATE TABLE mcp_permitted_write (id INTEGER)" });
+      const inserted = await ok<{ affected_rows: number }>(mixed, "execute_statement", {
+        connection: "writer", sql: "INSERT INTO mcp_permitted_write VALUES (?)", params: [42],
+      });
+      assert.equal(inserted.affected_rows, 1);
+      const result = await call(mixed, "run_query", { connection: "writer", sql: "SELECT id FROM mcp_permitted_write" });
+      assert.equal(result.isError, undefined, textOf(result));
+      assert.match(textOf(result), /42/u);
+      const readResult = await call(mixed, "run_query", {
+        connection: "reader", sql: "SELECT id FROM mcp_permitted_write",
+      });
+      assert.equal(readResult.isError, undefined, textOf(readResult));
+      assert.match(textOf(readResult), /42/u);
+      // This SELECT passes the MCP query gate. Only the real server's connection
+      // restriction prevents the administrative function from changing a session.
+      await failsWith(mixed, "run_query", {
+        connection: "reader",
+        sql: "SELECT hardcharger_set_session_setting(HARDCHARGER_CURRENT_SESSION(), 'query_timeout', '30')",
+      }, /read.only/u);
+      const stillReads = await call(mixed, "run_query", { connection: "reader", sql: "SELECT 43" });
+      assert.equal(stillReads.isError, undefined, textOf(stillReads));
+      assert.match(textOf(stillReads), /43/u);
+      await ok(mixed, "execute_statement", { connection: "writer", sql: "DROP TABLE mcp_permitted_write" });
+    } finally {
+      await mixed.close();
+    }
+  });
+
   it("server_info reports versions, the user, the protocol and redacts credentials", async () => {
     await ok(ro, "run_query", { sql: "SELECT 1" }); // server_info never connects: a query does
     const r = await call(ro, "server_info");
