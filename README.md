@@ -38,8 +38,8 @@ runs on. It is the Hardcharger port of
 [gizmosql-mcp](https://github.com/gizmodata/gizmosql-mcp), with the same tools and settings
 (`HARDCHARGER_*` instead of `GIZMOSQL_*`; see [CHANGELOG.md](CHANGELOG.md) for what changed).
 
-> **Status: 2.4.3, with Hardcharger 2.7.0.** Built on `@gizmodata/hardcharger` 2.4.4 (hardcharger-js
-> `a49a2a2`, on `@gizmodata/chargewire` 2.3.5, chargewire-js `36352f4`, Chargewire protocol 1.0.0);
+> **Status: 2.5.0, with Hardcharger 2.13.0.** Built on `@gizmodata/hardcharger` 2.5.0 (hardcharger-js
+> `478c6c6`, on `@gizmodata/chargewire` 2.4.0, chargewire-js `30ed33b`, Chargewire protocol 1.0.0);
 > tested against the image of Hardcharger's main branch and against Hardcharger 2.2.0, released
 > before the protocol was renamed to Chargewire.
 
@@ -538,7 +538,9 @@ anonymously over https.
 Releases follow [semantic versioning](https://semver.org) and [CHANGELOG.md](CHANGELOG.md): move the
 `[Unreleased]` entries into a `## [X.Y.Z] - YYYY-MM-DD` section, set the same version in
 `package.json`, `manifest.json` and `charts/hardcharger-mcp/Chart.yaml` (`version` and
-`appVersion`), commit, and push `main` and `vX.Y.Z` together. `release.yml` runs the full CI on the
+`appVersion`), then merge a pull request after its required checks pass. Fetch `origin/main`,
+verify its tree matches the tested candidate, and tag that exact landed commit `vX.Y.Z`.
+Push the release tag without moving it afterward. `release.yml` runs the full CI on the
 tagged commit, then makes a GitHub Release with the `.mcpb` bundles, their checksums, the Helm chart
 and the npm tarball, and the CHANGELOG section as notes. Publishing to npm (public; trusted
 publishing, OIDC) runs when the repository variable `NPM_PUBLISH_ENABLED` is `true`, after a check
