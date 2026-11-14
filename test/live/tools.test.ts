@@ -94,6 +94,20 @@ describe("hardcharger-mcp tools against hardcharger-server", () => {
       const result = await call(mixed, "run_query", { connection: "writer", sql: "SELECT id FROM mcp_permitted_write" });
       assert.equal(result.isError, undefined, textOf(result));
       assert.match(textOf(result), /42/u);
+      const readResult = await call(mixed, "run_query", {
+        connection: "reader", sql: "SELECT id FROM mcp_permitted_write",
+      });
+      assert.equal(readResult.isError, undefined, textOf(readResult));
+      assert.match(textOf(readResult), /42/u);
+      // This SELECT passes the MCP query gate. Only the real server's connection
+      // restriction prevents the administrative function from changing a session.
+      await failsWith(mixed, "run_query", {
+        connection: "reader",
+        sql: "SELECT hardcharger_set_session_setting(HARDCHARGER_CURRENT_SESSION(), 'query_timeout', '30')",
+      }, /read.only/u);
+      const stillReads = await call(mixed, "run_query", { connection: "reader", sql: "SELECT 43" });
+      assert.equal(stillReads.isError, undefined, textOf(stillReads));
+      assert.match(textOf(stillReads), /43/u);
       await ok(mixed, "execute_statement", { connection: "writer", sql: "DROP TABLE mcp_permitted_write" });
     } finally {
       await mixed.close();
