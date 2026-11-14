@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `HARDCHARGER_READ_ONLY=true` requires an enforced read-only session, confirmed before
+  setup or queries and requested again on reconnect. Named connections can override the
+  default with `HARDCHARGER_<KEY>_READ_ONLY`; brokered connections inherit it. Read-only
+  connections disable write tools even when `HARDCHARGER_ALLOW_WRITES` is enabled.
+  The default remains off for compatibility with older servers.
+
 ## [2.4.3] - 2026-11-07
 
 ### Fixed

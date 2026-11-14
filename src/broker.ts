@@ -287,6 +287,7 @@ export class BrokeredRegistry extends ConnectionRegistry {
         id: c.id,
         label: c.label ?? undefined,
         allowWrites: c.allow_writes,
+        readOnly: this.config.readOnly,
         tokenSource: new BrokeredTokenSource(this, c.id),
       });
     }

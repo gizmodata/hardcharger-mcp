@@ -38,6 +38,7 @@
         "HARDCHARGER_TLS_SKIP_VERIFY": "${user_config.tls_skip_verify}",
         "HARDCHARGER_DEFAULT_CATALOG": "${user_config.default_catalog}",
         "HARDCHARGER_DEFAULT_SCHEMA": "${user_config.default_schema}",
+        "HARDCHARGER_READ_ONLY": "${user_config.read_only}",
         "HARDCHARGER_ALLOW_WRITES": "${user_config.allow_writes}",
         "HARDCHARGER_MAX_ROWS": "${user_config.max_rows}",
         "HARDCHARGER_MAX_CELL_CHARS": "${user_config.max_cell_chars}",
@@ -209,6 +210,13 @@
       "type": "string",
       "title": "Default schema",
       "description": "Optional schema for unqualified table names. Leave blank for the server default.",
+      "required": false
+    },
+    "read_only": {
+      "type": "boolean",
+      "title": "Require read-only sessions",
+      "description": "Require the database server to enforce read-only sessions. Needs a server with read-only session support; older servers return an error.",
+      "default": false,
       "required": false
     },
     "allow_writes": {

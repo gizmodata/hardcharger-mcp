@@ -21,7 +21,7 @@ interface Call {
 }
 
 /** A scripted client: records every call; `failures` makes the named operations throw once each. */
-function fakeServer(script: { failures?: Record<string, unknown[]>; badCatalogs?: string[]; replacements?: number } = {}) {
+function fakeServer(script: { failures?: Record<string, unknown[]>; badCatalogs?: string[]; replacements?: number; confirmReadOnly?: unknown } = {}) {
   const calls: Call[] = [];
   let opened = 0;
   const fail = (op: string) => {
@@ -36,6 +36,9 @@ function fakeServer(script: { failures?: Record<string, unknown[]>; badCatalogs?
     opened++;
     calls.push({ op: "connect", arg: options.url, options });
     fail("connect");
+    if ((options.sessionOptions as Record<string, unknown> | undefined)?.read_only === true) {
+      session.read_only = "confirmReadOnly" in script ? script.confirmReadOnly : true;
+    }
     const stream = (rows: number, options: Record<string, unknown>) => {
       const batches = Array.from({ length: Math.ceil(rows / 10) }, (_, b) =>
         tableFromArrays({ i: Int32Array.from({ length: Math.min(10, rows - b * 10) }, (_, k) => b * 10 + k) }).batches[0]!,
@@ -78,6 +81,7 @@ function fakeServer(script: { failures?: Record<string, unknown[]>; badCatalogs?
         return session;
       },
       async getSession() {
+        calls.push({ op: "getSession" });
         return { session_id: "s", options: session, idle_timeout_s: 600 };
       },
       async query(sql: string, _params: unknown, options: Record<string, unknown>) {
@@ -131,6 +135,37 @@ function connection(env: Record<string, string>, server: ReturnType<typeof fakeS
 }
 
 describe("HardchargerConnection", () => {
+  it("does not request read-only for an ordinary writable connection", async () => {
+    const server = fakeServer();
+    const { conn } = connection({ HARDCHARGER_ALLOW_WRITES: "true", HARDCHARGER_READ_ONLY: "false" }, server);
+    await conn.query("CREATE TABLE permitted_write (id INTEGER)");
+    assert.equal(server.calls.find((c) => c.op === "connect")?.options?.sessionOptions, undefined);
+    assert.ok(server.calls.some((c) => c.op === "query" && c.arg === "CREATE TABLE permitted_write (id INTEGER)"));
+    await conn.close();
+  });
+
+  it("requires read-only at creation and confirms before setup or queries on every reconnect", async () => {
+    const server = fakeServer();
+    const { conn } = connection({ HARDCHARGER_READ_ONLY: "true" }, server);
+    await conn.query("SELECT 1");
+    assert.deepEqual(server.calls.find((c) => c.op === "connect")?.options?.sessionOptions, { read_only: true });
+    assert.ok(server.calls.findIndex((c) => c.op === "getSession") < server.calls.findIndex((c) => c.op === "query"));
+    await conn.reset();
+    await conn.query("SELECT 2");
+    assert.equal(server.opened(), 2);
+    for (const call of server.calls.filter((c) => c.op === "connect")) assert.deepEqual(call.options?.sessionOptions, { read_only: true });
+  });
+
+  for (const confirmation of [undefined, false, "true"]) {
+    it(`closes an unconfirmed read-only session before setup (${String(confirmation)})`, async () => {
+      const server = fakeServer({ confirmReadOnly: confirmation });
+      const { conn } = connection({ HARDCHARGER_READ_ONLY: "true", HARDCHARGER_DEFAULT_CATALOG: "lake" }, server);
+      await assert.rejects(() => conn.query("SELECT 1"), /did not confirm/u);
+      assert.equal(server.calls.filter((c) => c.op === "query" || c.op === "setOptions").length, 0);
+      assert.equal(server.calls.filter((c) => c.op === "close").length, 1);
+    });
+  }
+
   it("applies the default catalog and schema as session options (which the client replays)", async () => {
     const server = fakeServer();
     const { conn } = connection({ HARDCHARGER_DEFAULT_CATALOG: "lake", HARDCHARGER_DEFAULT_SCHEMA: "sales" }, server);
