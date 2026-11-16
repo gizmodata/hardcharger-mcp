@@ -16,6 +16,7 @@ import { z } from "zod";
 import {
   type BrokerConfig,
   type ConnectionConfig,
+  type ConnectionHooks,
   type McpConfig,
   type TokenSource,
   parseHardchargerUri,
@@ -40,6 +41,11 @@ const connectionSchema = z.object({
   default_catalog: z.string().nullish(),
   default_schema: z.string().nullish(),
   allow_writes: z.boolean().default(false),
+  /**
+   * Whether this connection requires a server-enforced read-only session. Absent or null: the MCP
+   * server's own HARDCHARGER_READ_ONLY. `false` never lifts that setting (it is a floor).
+   */
+  read_only: z.boolean().nullish(),
 });
 
 const listSchema = z.object({
@@ -78,6 +84,8 @@ export interface BrokerHooks {
   fetch?: typeof fetch;
   /** Test hook: clock (ms). */
   now?: () => number;
+  /** Test hook: opens each connection's client. */
+  connect?: ConnectionHooks["connect"];
 }
 
 /** The broker's error text from a JSON body (`error_description`, `message` or a string `detail`). */
@@ -215,9 +223,13 @@ export class BrokeredRegistry extends ConnectionRegistry {
     config: McpConfig,
     readonly broker: BrokerClient,
     log: (message: string) => void,
-    hooks: Pick<BrokerHooks, "now"> = {},
+    hooks: Pick<BrokerHooks, "now" | "connect"> = {},
   ) {
-    super(config, log, { connections: [], allowEmpty: true });
+    super(config, log, {
+      connections: [],
+      allowEmpty: true,
+      connectionHooks: hooks.connect ? { connect: hooks.connect } : undefined,
+    });
     this.clock = hooks.now ?? (() => Date.now());
   }
 
@@ -287,7 +299,8 @@ export class BrokeredRegistry extends ConnectionRegistry {
         id: c.id,
         label: c.label ?? undefined,
         allowWrites: c.allow_writes,
-        readOnly: this.config.readOnly,
+        // HARDCHARGER_READ_ONLY is a floor: the broker can require read-only, never lift it.
+        readOnly: this.config.readOnly || c.read_only === true,
         tokenSource: new BrokeredTokenSource(this, c.id),
       });
     }

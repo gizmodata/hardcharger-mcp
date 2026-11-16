@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import { HardchargerError } from "@gizmodata/hardcharger";
+import { tableFromArrays } from "apache-arrow";
+
 import { ACCESS_TOKEN_TYPE, BrokerClient, BrokerError, BrokeredRegistry } from "../../dist/broker.js";
-import { ConfigError, parseConfig } from "../../dist/connection.js";
+import {
+  ConfigError,
+  ConnectionReplacedError,
+  SettingsLostError,
+  TransactionLostError,
+  parseConfig,
+} from "../../dist/connection.js";
 import { INTROSPECTION_CACHE_MS, OAuthError, OAuthVerifier } from "../../dist/oauth.js";
 import { NoConnectionsError } from "../../dist/registry.js";
 import { startStdio } from "../../dist/transports.js";
@@ -352,6 +361,266 @@ describe("BrokeredRegistry", () => {
     const { r } = registry(() => ({ body: { connections: [cluster(), cluster({ id: "c-2", name: "ops" })] } }));
     await r.refresh();
     assert.deepEqual(r.resourceConnections(), []);
+  });
+});
+
+/**
+ * A scripted Hardcharger client for brokered connections: records each connect's options and every
+ * statement, confirms `read_only` only when the server is new enough (`readOnlySessions`), and can
+ * hold a statement until its client is closed (it then fails as a closed connection does).
+ */
+function scriptedServer(script: { readOnlySessions?: boolean } = {}) {
+  const connects: Array<{ url: string; sessionOptions: unknown }> = [];
+  const statements: string[] = [];
+  const closed: number[] = [];
+  let held: { started: () => void } | undefined;
+  let clientNo = 0;
+  const connect = async (options: { url: string; sessionOptions?: Record<string, unknown> }) => {
+    const no = ++clientNo;
+    connects.push({ url: options.url, sessionOptions: options.sessionOptions });
+    const readOnly = options.sessionOptions?.read_only === true && script.readOnlySessions !== false;
+    let onClose: (() => void) | undefined;
+    const run = async (sql: string) => {
+      if (/hardcharger_settings\(\)/u.test(sql)) return tableFromArrays({ name: [] as string[], value: [] as string[] });
+      statements.push(sql);
+      if (sql === "HOLD") {
+        const h = held;
+        held = undefined;
+        await new Promise<void>((_resolve, reject) => {
+          onClose = () => reject(new HardchargerError({ code: "client_connection_closed", message: "closed" } as never));
+          h?.started();
+        });
+      }
+      return tableFromArrays({ x: Int32Array.from([1]) });
+    };
+    return {
+      sessionReplacements: 0,
+      sessionId: `s${no}`,
+      server: { protocol: "chargewire", protocol_versions: ["1"], capabilities: [] },
+      async setOptions(o: Record<string, unknown>) {
+        return o;
+      },
+      async getSession() {
+        // A server before Hardcharger 2.13.0 ignores the option it doesn't know.
+        return { session_id: `s${no}`, options: readOnly ? { read_only: true } : {}, idle_timeout_s: 600 };
+      },
+      query: (sql: string) => run(sql),
+      async execute(sql: string) {
+        await run(sql);
+        return 0;
+      },
+      async close() {
+        closed.push(no);
+        onClose?.();
+      },
+    };
+  };
+  /** The next "HOLD" statement waits until its client closes; resolves once it is running. */
+  const holdNext = () => new Promise<void>((started) => (held = { started }));
+  return { connect, connects, statements, closed, holdNext };
+}
+
+function brokeredWith(
+  server: ReturnType<typeof scriptedServer>,
+  listed: () => unknown[],
+  env: Record<string, string> = {},
+): { r: BrokeredRegistry; lines: string[] } {
+  const config = parseConfig({ ...OAUTH, ...BROKER, HARDCHARGER_MCP_BROKER_CACHE_SECONDS: "0", ...env });
+  const { fetchImpl } = fakeBroker((s) =>
+    s.url.endsWith("/token") ? { body: { token: "minted", expires_in: 600 } } : { body: { connections: listed() } },
+  );
+  const lines: string[] = [];
+  const r = new BrokeredRegistry(config, new BrokerClient(config.broker!, { fetch: fetchImpl }), (m) => lines.push(m), {
+    connect: server.connect as never,
+  });
+  r.setSubjectToken("caller-access-token");
+  return { r, lines };
+}
+
+describe("BrokeredRegistry: read_only per connection", () => {
+  const four = () => [
+    cluster({ name: "required", read_only: true, allow_writes: true }),
+    cluster({ id: "c-2", name: "lifted", read_only: false, allow_writes: true }),
+    cluster({ id: "c-3", name: "absent", allow_writes: true }),
+    cluster({ id: "c-4", name: "nulled", read_only: null, allow_writes: true }),
+  ];
+
+  it("lets the broker require read-only per connection; absent or null keeps the server's default", async () => {
+    const { r } = registry(() => ({ body: { connections: four() } }), { HARDCHARGER_ALLOW_WRITES: "true" });
+    await r.refresh();
+    assert.deepEqual(
+      r.summaries().map((s) => [s.name, s.read_only_required, s.allow_writes]),
+      [
+        ["required", true, false],
+        ["lifted", false, true],
+        ["absent", false, true],
+        ["nulled", false, true],
+      ],
+    );
+  });
+
+  it("never lets the broker lift HARDCHARGER_READ_ONLY=true (a floor), and offers no writes then", async () => {
+    const { r } = registry(() => ({ body: { connections: four() } }), {
+      HARDCHARGER_ALLOW_WRITES: "true",
+      HARDCHARGER_READ_ONLY: "true",
+    });
+    await r.refresh();
+    assert.deepEqual(
+      r.summaries().map((s) => [s.name, s.read_only_required, s.allow_writes]),
+      [
+        ["required", true, false],
+        ["lifted", true, false],
+        ["absent", true, false],
+        ["nulled", true, false],
+      ],
+    );
+    assert.equal(r.anyAllowsWrites(), false);
+  });
+
+  it("skips an entry whose read_only is not a boolean, rather than guess", async () => {
+    const { r, lines } = registry(() => ({
+      body: { connections: [cluster({ read_only: "true" }), cluster({ id: "c-2", name: "ops" })] },
+    }));
+    await r.refresh();
+    assert.deepEqual(r.names(), ["ops"]);
+    assert.ok(lines.some((l) => l.includes("skipped a connection with an unexpected shape")), lines.join("\n"));
+  });
+
+  it("requests read-only at session creation and confirms it before any query, on the required connection only", async () => {
+    const server = scriptedServer();
+    const { r } = brokeredWith(server, () => [cluster({ read_only: true }), cluster({ id: "c-2", name: "ops" })]);
+    await r.refresh();
+    await r.get("analytics").query("SELECT 1");
+    await r.get("ops").query("SELECT 2");
+    assert.deepEqual(
+      server.connects.map((c) => c.sessionOptions),
+      [{ read_only: true }, undefined],
+    );
+    assert.deepEqual(server.statements, ["SELECT 1", "SELECT 2"]);
+  });
+
+  it("refuses to run anything on a server that doesn't confirm read-only (before Hardcharger 2.13.0)", async () => {
+    const server = scriptedServer({ readOnlySessions: false });
+    const { r } = brokeredWith(server, () => [cluster({ read_only: true }), cluster({ id: "c-2", name: "ops" })]);
+    await r.refresh();
+    await assert.rejects(r.get("analytics").query("SELECT 1"), /did not confirm read_only=true/u);
+    assert.deepEqual(server.statements, [], "nothing ran on the unconfirmed session");
+    assert.deepEqual(server.closed, [1], "the unconfirmed session is closed");
+    // The same old server, where the broker didn't ask for read-only: works as before.
+    await r.get("ops").query("SELECT 2");
+    assert.deepEqual(server.statements, ["SELECT 2"]);
+  });
+
+  it("replaces the connection when read_only changes: the old session closes and never opens again", async () => {
+    const server = scriptedServer();
+    let readOnly: boolean | undefined;
+    const { r, lines } = brokeredWith(server, () => [cluster({ read_only: readOnly, allow_writes: true })], {
+      HARDCHARGER_ALLOW_WRITES: "true",
+    });
+    await r.refresh();
+    const writable = r.get("analytics");
+    await writable.update("INSERT INTO t VALUES (1)");
+    assert.equal(r.allowsWrites(writable), true);
+
+    readOnly = true; // an administrator turned AI writes off
+    await r.refresh();
+    const readOnlyConn = r.get("analytics");
+    assert.notEqual(readOnlyConn, writable, "a new connection, not the read-write session");
+    assert.deepEqual(server.closed, [1], "the read-write session is closed");
+    assert.equal(r.allowsWrites(readOnlyConn), false);
+    assert.equal(r.current(), "analytics");
+    // A caller still holding the old connection can't open a read-write session again.
+    await assert.rejects(writable.update("INSERT INTO t VALUES (2)"), (e: unknown) => {
+      assert.ok(e instanceof ConnectionReplacedError, String(e));
+      assert.match((e as Error).message, /now requires a read-only session/u);
+      return true;
+    });
+    assert.equal(server.connects.length, 1, "no session opened for the retired connection");
+    await readOnlyConn.query("SELECT 1");
+    assert.deepEqual(server.connects.at(-1)?.sessionOptions, { read_only: true });
+    assert.ok(lines.some((l) => /closing connection analytics: replaced: the connection now requires a read-only session/u.test(l)), lines.join("\n"));
+
+    readOnly = false; // and on again: a read-only session can't become read-write, so a new one
+    await r.refresh();
+    const again = r.get("analytics");
+    assert.notEqual(again, readOnlyConn);
+    assert.deepEqual(server.closed, [1, 2]);
+    await again.update("INSERT INTO t VALUES (3)");
+    assert.equal(server.connects.at(-1)?.sessionOptions, undefined);
+    assert.deepEqual(server.statements, ["INSERT INTO t VALUES (1)", "SELECT 1", "INSERT INTO t VALUES (3)"]);
+  });
+
+  it("keeps the session when only allow_writes or the label changes", async () => {
+    const server = scriptedServer();
+    let allow = true;
+    const { r } = brokeredWith(server, () => [cluster({ read_only: true, allow_writes: allow, label: `l-${allow}` })]);
+    await r.refresh();
+    const conn = r.get("analytics");
+    await conn.query("SELECT 1");
+    allow = false;
+    await r.refresh();
+    assert.equal(r.get("analytics"), conn);
+    assert.deepEqual(server.closed, []);
+  });
+
+  it("fails, without running it, the first statement after a replacement when a transaction may have been open", async () => {
+    const server = scriptedServer();
+    let readOnly = false;
+    const { r, lines } = brokeredWith(server, () => [cluster({ read_only: readOnly, allow_writes: true })], {
+      HARDCHARGER_ALLOW_WRITES: "true",
+    });
+    await r.refresh();
+    await r.get().update("BEGIN");
+    await r.get().update("INSERT INTO t VALUES (1)");
+    readOnly = true;
+    await r.refresh();
+    await assert.rejects(r.get().query("COMMIT"), (e: unknown) => {
+      assert.ok(e instanceof TransactionLostError, String(e));
+      assert.match((e as Error).message, /\(replaced: the connection now requires a read-only session\)/u);
+      assert.match((e as Error).message, /this statement was not run again/u);
+      return true;
+    });
+    assert.deepEqual(server.statements, ["BEGIN", "INSERT INTO t VALUES (1)"], "COMMIT never ran on the new session");
+    assert.ok(lines.some((l) => /a transaction possibly open; statement not run/u.test(l)), lines.join("\n"));
+    // Once: the connection is usable after that.
+    await r.get().query("SELECT 1");
+    assert.deepEqual(server.statements.at(-1), "SELECT 1");
+  });
+
+  it("fails the first statement after a replacement when SQL set session settings, and not otherwise", async () => {
+    const server = scriptedServer();
+    let readOnly = false;
+    const { r } = brokeredWith(server, () => [cluster({ read_only: readOnly })]);
+    await r.refresh();
+    await r.get().query("SET threads = 2");
+    readOnly = true;
+    await r.refresh();
+    await assert.rejects(r.get().query("SELECT 1"), (e: unknown) => e instanceof SettingsLostError);
+    assert.deepEqual(server.statements, ["SET threads = 2"]);
+
+    // Plain reads on the old session: the next statement simply runs on the new one.
+    await r.get().query("SELECT 2");
+    readOnly = false;
+    await r.refresh();
+    await r.get().query("SELECT 3");
+    assert.deepEqual(server.statements, ["SET threads = 2", "SELECT 2", "SELECT 3"]);
+  });
+
+  it("a statement in flight when read_only changes is not retried on a session with the old settings", { timeout: 5000 }, async () => {
+    const server = scriptedServer();
+    let readOnly = false;
+    const { r } = brokeredWith(server, () => [cluster({ read_only: readOnly, allow_writes: true })], {
+      HARDCHARGER_ALLOW_WRITES: "true",
+    });
+    await r.refresh();
+    const old = r.get();
+    const running = server.holdNext();
+    const call = old.update("HOLD");
+    await running;
+    readOnly = true;
+    await r.refresh();
+    await assert.rejects(call, (e: unknown) => e instanceof ConnectionReplacedError);
+    assert.equal(server.connects.length, 1, "the lost statement was not retried on a new read-write session");
   });
 });
 

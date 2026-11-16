@@ -37,6 +37,8 @@ interface Grant {
   /** Connection names this person may reach, mapped to whether writes are allowed there. */
   servers: Record<string, boolean>;
   groups?: string[];
+  /** The broker's `read_only` per connection name; a name not here is listed without the field. */
+  readOnly?: Record<string, boolean | null>;
 }
 
 describe("connection broker: per-person identity", () => {
@@ -98,6 +100,7 @@ describe("connection broker: per-person identity", () => {
             default_catalog: "memory",
             default_schema: "main",
             allow_writes: allowWrites,
+            ...(grant.readOnly && name in grant.readOnly ? { read_only: grant.readOnly[name] } : {}),
           })),
           message: "You have no servers yet.",
         });
@@ -318,6 +321,62 @@ describe("connection broker: per-person identity", () => {
     const nothing = await call(grace, "run_query", { sql: "SELECT 1" });
     assert.equal(nothing.isError, true);
     assert.match(textOf(nothing), /You have no servers yet\./u);
+  });
+
+  it("lets the broker require a server-enforced read-only session per connection, and replaces the session when that changes", async () => {
+    const admin = await adminConnection(target);
+    try {
+      await admin.execute('CREATE USER "kate@example.com"');
+      await admin.execute('GRANT fixer TO "kate@example.com"');
+    } finally {
+      await admin.close();
+    }
+    // Writes allowed by the broker on both; "guarded" also requires a read-only session, "plain" says nothing.
+    access.set("kate@example.com", { servers: { guarded: true, plain: true }, readOnly: { guarded: true } });
+    const kate = await connectAs("kate@example.com");
+    const listed = await ok<{ connections: Array<{ name: string; read_only_required: boolean; allow_writes: boolean }> }>(kate, "list_connections");
+    assert.deepEqual(
+      listed.connections.map((c) => [c.name, c.read_only_required, c.allow_writes]),
+      [
+        ["guarded", true, false],
+        ["plain", false, true],
+      ],
+    );
+    const blocked = await call(kate, "execute_statement", { sql: "UPDATE orders SET depot = 'x' WHERE id = 1", connection: "guarded" });
+    assert.equal(blocked.isError, true);
+    assert.match(textOf(blocked), /does not accept writes/u);
+    // This SELECT passes the MCP server's SQL check. A read-only session refuses it with the server's
+    // own read_only code (SQLSTATE 25006) before anything else; any other session refuses it only
+    // because kate isn't an administrator.
+    const changeSession = "SELECT hardcharger_set_session_setting(HARDCHARGER_CURRENT_SESSION(), 'query_timeout', '30')";
+    const readOnlyRefusal = /\(read_only, SQLSTATE 25006\b/u;
+    const refusal = async (connection: string): Promise<string> => {
+      const r = await call(kate, "run_query", { sql: changeSession, connection });
+      assert.equal(r.isError, true, textOf(r));
+      return textOf(r);
+    };
+    assert.match(await refusal("guarded"), readOnlyRefusal);
+    const ordinary = await refusal("plain");
+    assert.doesNotMatch(ordinary, readOnlyRefusal);
+    assert.match(ordinary, /permission_denied/u);
+
+    // The administrator turns AI writes on again: the read-only session is replaced with an ordinary one.
+    access.set("kate@example.com", { servers: { guarded: true, plain: true }, readOnly: { guarded: false } });
+    const relisted = await ok<{ connections: Array<{ name: string; read_only_required: boolean; allow_writes: boolean }> }>(kate, "list_connections");
+    assert.deepEqual(relisted.connections.map((c) => [c.name, c.read_only_required, c.allow_writes])[0], ["guarded", false, true]);
+    const nowOrdinary = await refusal("guarded");
+    assert.doesNotMatch(nowOrdinary, readOnlyRefusal);
+    assert.match(nowOrdinary, /permission_denied/u);
+    const fixed = await ok<{ affected_rows: number }>(kate, "execute_statement", {
+      sql: "UPDATE orders SET depot = depot WHERE id = 1",
+      connection: "guarded",
+    });
+    assert.equal(fixed.affected_rows, 1);
+
+    // And off: the writable session is not kept.
+    access.set("kate@example.com", { servers: { guarded: true, plain: true }, readOnly: { guarded: true } });
+    await ok(kate, "list_connections");
+    assert.match(await refusal("guarded"), readOnlyRefusal);
   });
 
   it("signs in again with a fresh broker token when the server's access token expires", async () => {

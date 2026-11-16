@@ -557,9 +557,10 @@ export class ServerResumingError extends Error {
  * in autocommit).
  */
 export class TransactionLostError extends Error {
-  constructor(name: string, cause: unknown) {
+  /** `why`: how the session was lost, when not by `cause` (e.g. the connection was replaced). */
+  constructor(name: string, cause: unknown, why?: string) {
     super(
-      `The connection "${name}" lost its Hardcharger session (${errorCode(cause) ?? "connection lost"}) after SQL ` +
+      `The connection "${name}" lost its Hardcharger session (${why ?? errorCode(cause) ?? "connection lost"}) after SQL ` +
         "that can begin a transaction (BEGIN, START TRANSACTION, autocommit) ran on it, so a transaction may have " +
         "been open: the server rolled it back, and this statement was not run again. Nothing since that BEGIN is " +
         "committed; start the transaction again. The connection is usable.",
@@ -574,14 +575,30 @@ export class TransactionLostError extends Error {
  * `PRAGMA`): a new session does not have them, so the statement was not run again there.
  */
 export class SettingsLostError extends Error {
-  constructor(name: string, cause: unknown) {
+  /** `why`: how the session was lost, when not by `cause` (e.g. the connection was replaced). */
+  constructor(name: string, cause: unknown, why?: string) {
     super(
-      `The connection "${name}" lost its Hardcharger session (${errorCode(cause) ?? "connection lost"}) after SQL ` +
+      `The connection "${name}" lost its Hardcharger session (${why ?? errorCode(cause) ?? "connection lost"}) after SQL ` +
         "that changes the session's settings (SET, RESET or PRAGMA) ran on it. A new session does not have those " +
         "settings, so this statement was not run again: run the SET again, then the statement. The connection is usable.",
       { cause },
     );
     this.name = "SettingsLostError";
+  }
+}
+
+/**
+ * A call reached a connection the registry had already replaced or dropped (a connection broker
+ * changed or withdrew it, e.g. turned a read-only requirement on). It never opens a session
+ * again: the session it would open carries the old settings.
+ */
+export class ConnectionReplacedError extends Error {
+  constructor(name: string, why: string) {
+    super(
+      `The connection "${name}" was closed while this call waited or ran (${why}), so the call did not ` +
+        "finish on it. Run it again: it uses the connection as now listed (see list_connections).",
+    );
+    this.name = "ConnectionReplacedError";
   }
 }
 
@@ -772,6 +789,13 @@ export class HardchargerConnection {
   private mayHoldSettings = false;
   /** The latest `server_resuming` the client waited out, while a call is under way. */
   private resuming: { at: number; detail: string } | undefined;
+  /** Set when the registry replaced or dropped this connection: it never opens a session again. */
+  private retiredBecause: string | undefined;
+  /**
+   * The connection this one replaced may have held a transaction or SQL-set settings: the next
+   * statement here fails (and is not run) instead of running alone on a fresh session.
+   */
+  private inheritedLoss: { transaction: boolean; why: string } | undefined;
 
   constructor(
     readonly config: ConnectionConfig,
@@ -1064,6 +1088,7 @@ export class HardchargerConnection {
 
   /** Returns the shared client, opening it on first use. */
   async get(): Promise<Connection> {
+    if (this.retiredBecause !== undefined) throw new ConnectionReplacedError(this.config.name, this.retiredBecause);
     if (this.client) return this.client;
     if (!this.connecting) {
       this.connecting = this.open()
@@ -1100,6 +1125,27 @@ export class HardchargerConnection {
   }
 
   /**
+   * Closes this connection for good (the registry replaced or dropped it): a call still holding
+   * it fails with ConnectionReplacedError instead of opening a session with the old settings.
+   */
+  async retire(why: string): Promise<void> {
+    this.retiredBecause = why;
+    await this.close();
+  }
+
+  /**
+   * This connection replaces `previous` under the same name. When SQL that can begin a transaction
+   * or change session settings ran on `previous`'s session, the next statement here fails with
+   * TransactionLostError or SettingsLostError and is not run (Chargewire §5.7, as for a lost
+   * session): on this new session it would run alone, in autocommit. Call before `previous` closes.
+   */
+  inheritSessionState(previous: HardchargerConnection, why: string): void {
+    if (previous.mayHoldTransaction || previous.mayHoldSettings) {
+      this.inheritedLoss = { transaction: previous.mayHoldTransaction, why };
+    }
+  }
+
+  /**
    * Runs `fn` against the shared client with: serialization, one retry after the
    * connection was lost (see isConnectionLost), and a deadline: the server's statement
    * timeout, a client-side abort a few seconds later that cancels the statement on the
@@ -1107,6 +1153,19 @@ export class HardchargerConnection {
    */
   async run<T>(fn: (client: Connection, ctx: RunContext) => Promise<T>, options: RunOptions = {}): Promise<T> {
     const task = async (): Promise<T> => {
+      const inherited = options.sql !== undefined ? this.inheritedLoss : undefined;
+      if (inherited !== undefined) {
+        this.inheritedLoss = undefined;
+        if (this.retiredBecause === undefined) {
+          this.log(
+            `[hardcharger-mcp] ${this.config.name} replaced (${inherited.why}) with ` +
+              `${inherited.transaction ? "a transaction possibly open" : "session settings set by SQL"}; statement not run`,
+          );
+          throw inherited.transaction
+            ? new TransactionLostError(this.config.name, undefined, inherited.why)
+            : new SettingsLostError(this.config.name, undefined, inherited.why);
+        }
+      }
       let attempt = 0;
       for (;;) {
         attempt++;

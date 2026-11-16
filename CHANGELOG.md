@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A connection broker can require a server-enforced read-only session per connection: the
+  optional `read_only` field of a `/connections` entry. `true` makes that connection behave like
+  one configured with `HARDCHARGER_READ_ONLY` (requested at session creation, confirmed before
+  setup or queries, requested again on every reconnect, no write tools); absent or `null` keeps
+  `HARDCHARGER_READ_ONLY`, so older brokers work unchanged. `HARDCHARGER_READ_ONLY=true` stays a
+  floor: the broker's `false` doesn't lift it. When a later list changes a connection's
+  `read_only`, its session is closed and replaced at the next call; a call still in flight on the
+  old session fails instead of reopening it with the old setting, and when a transaction may have
+  been open (or SQL set session settings) the first statement on the new session fails, unrun, with
+  `TransactionLostError` (`SettingsLostError`), as after a lost session. A call still in flight on
+  a connection the broker stopped listing now fails the same way instead of signing in again.
+
 ## [2.5.0] - 2026-11-14
 
 ### Added

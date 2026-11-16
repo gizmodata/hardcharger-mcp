@@ -286,7 +286,10 @@ It needs OAuth (each request must carry a verified person) and the HTTP transpor
 person's access token is never the broker credential: the server authenticates to the broker
 with `HARDCHARGER_MCP_BROKER_TOKEN` and presents the person's token as an RFC 8693 subject token.
 Writes need both `HARDCHARGER_ALLOW_WRITES=true` (the server-wide ceiling) and the broker's
-`allow_writes` for that person and server. Table resources are listed, and `server_info` asks a
+`allow_writes` for that person and server. The broker can also require a server-enforced
+read-only session per connection (`read_only: true`, which needs Hardcharger 2.13.0 or later on
+that server); `HARDCHARGER_READ_ONLY=true` still applies to every brokered connection, and the
+broker can't lift it. Table resources are listed, and `server_info` asks a
 server, only for servers the person has already used, so listing never signs in to every server
 they can reach.
 The protocol, for anyone writing a broker, is in
@@ -321,7 +324,7 @@ Only `HARDCHARGER_*` names are read.
 | `HARDCHARGER_TLS_SKIP_VERIFY` | `false` | Accept self-signed or untrusted certificates |
 | `HARDCHARGER_DEFAULT_CATALOG` | | Catalog for unqualified table names (optional) |
 | `HARDCHARGER_DEFAULT_SCHEMA` | | Schema for unqualified table names (optional) |
-| `HARDCHARGER_READ_ONLY` | `false` | Require server-enforced read-only sessions; also the default for additional and brokered connections |
+| `HARDCHARGER_READ_ONLY` | `false` | Require server-enforced read-only sessions; also the default for additional connections, and a floor for brokered ones (a broker can add `read_only: true`, never lift it) |
 | `HARDCHARGER_ALLOW_WRITES` | `false` | Register `execute_statement` and let `run_query` run non-read statements |
 | `HARDCHARGER_MAX_ROWS` | `500` | Hard cap on rows returned by `run_query` |
 | `HARDCHARGER_MAX_CELL_CHARS` | `200` | Cells longer than this are truncated with `…` |
@@ -364,7 +367,9 @@ ordinary connections with the option left off continue to work.
 This option is separate from `HARDCHARGER_ALLOW_WRITES`, which controls MCP tools and SQL
 filtering. With read-only enabled, write tools remain disabled even if allow-writes is true.
 Additional configured connections inherit the default; `HARDCHARGER_<KEY>_READ_ONLY` can
-override it for a particular connection. Brokered connections use the global setting.
+override it for a particular connection. A brokered connection is read-only when this setting is
+on or when the broker lists it with `read_only: true` (the broker can't lift it: see
+[docs/connection-broker.md](docs/connection-broker.md#read-only-sessions)).
 
 Read-write connections remain supported: leave `HARDCHARGER_READ_ONLY=false` and enable
 `HARDCHARGER_ALLOW_WRITES=true` when MCP should permit writes. Database grants still decide
