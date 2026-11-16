@@ -16,6 +16,7 @@ import { z } from "zod";
 import {
   type BrokerConfig,
   type ConnectionConfig,
+  type ConnectionHooks,
   type McpConfig,
   type TokenSource,
   parseHardchargerUri,
@@ -40,6 +41,11 @@ const connectionSchema = z.object({
   default_catalog: z.string().nullish(),
   default_schema: z.string().nullish(),
   allow_writes: z.boolean().default(false),
+  /**
+   * Whether this connection requires a server-enforced read-only session. Absent or null: the MCP
+   * server's own HARDCHARGER_READ_ONLY. `false` never lifts that setting (it is a floor).
+   */
+  read_only: z.boolean().nullish(),
 });
 
 const listSchema = z.object({
@@ -78,6 +84,8 @@ export interface BrokerHooks {
   fetch?: typeof fetch;
   /** Test hook: clock (ms). */
   now?: () => number;
+  /** Test hook: opens each connection's client. */
+  connect?: ConnectionHooks["connect"];
 }
 
 /** The broker's error text from a JSON body (`error_description`, `message` or a string `detail`). */
@@ -168,6 +176,8 @@ export class BrokerClient {
 /** Sign-in tokens for one caller on one server, minted by the broker and reused for most of their life. */
 class BrokeredTokenSource implements TokenSource {
   private cached: { token: string; reuseUntil: number } | undefined;
+  /** When the last token handed out expires (ms). */
+  private expiresAt = 0;
   private inFlight: Promise<string> | undefined;
   private readonly issued = new Set<string>();
 
@@ -183,6 +193,7 @@ class BrokeredTokenSource implements TokenSource {
       .issueToken(this.registry.subjectToken(), this.connectionId)
       .then(({ token, expiresIn }) => {
         this.cached = { token, reuseUntil: this.registry.now() + expiresIn * 1000 * TOKEN_REUSE_FRACTION };
+        this.expiresAt = Math.max(this.expiresAt, this.registry.now() + expiresIn * 1000);
         this.issued.add(token);
         return token;
       })
@@ -194,6 +205,10 @@ class BrokeredTokenSource implements TokenSource {
 
   secrets(): string[] {
     return [...this.issued];
+  }
+
+  secretsExpireAt(): number {
+    return this.expiresAt;
   }
 }
 
@@ -215,13 +230,17 @@ export class BrokeredRegistry extends ConnectionRegistry {
     config: McpConfig,
     readonly broker: BrokerClient,
     log: (message: string) => void,
-    hooks: Pick<BrokerHooks, "now"> = {},
+    hooks: Pick<BrokerHooks, "now" | "connect"> = {},
   ) {
-    super(config, log, { connections: [], allowEmpty: true });
+    super(config, log, {
+      connections: [],
+      allowEmpty: true,
+      connectionHooks: hooks.connect ? { connect: hooks.connect } : undefined,
+    });
     this.clock = hooks.now ?? (() => Date.now());
   }
 
-  now(): number {
+  override now(): number {
     return this.clock();
   }
 
@@ -250,9 +269,23 @@ export class BrokeredRegistry extends ConnectionRegistry {
     try {
       listed = await this.broker.listConnections(this.callerToken);
     } catch (err) {
-      // Keep what the caller had; say why on the next tool call that finds nothing.
       this.lastProblem = err instanceof Error ? err.message : String(err);
       this.log(`[hardcharger-mcp] connection broker: ${this.redact(this.lastProblem)}`);
+      const status = err instanceof BrokerError ? err.status : undefined;
+      const refused = status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429;
+      const ttl = (this.config.broker?.cacheSeconds ?? 0) * 1000;
+      if (refused) {
+        // The broker said no (a revoked sign-in, a suspended account): the caller reaches nothing now.
+        this.listedAt = this.now();
+        this.emptyMessage = undefined;
+        await this.replaceConnections([]);
+      } else if (this.listedAt === undefined || this.now() - this.listedAt >= ttl) {
+        // It could not say (unreachable, 5xx, a body that isn't a list): the last list stands only
+        // while it is fresh, so no setting it carried (read_only, allow_writes) outlives the cache
+        // period. The broker's problem is the answer until it lists again.
+        if (this.names().length > 0) this.log("[hardcharger-mcp] connection broker: the last list is out of date; closing its connections");
+        await this.replaceConnections([]);
+      }
       return;
     }
     const configs: ConnectionConfig[] = [];
@@ -287,7 +320,8 @@ export class BrokeredRegistry extends ConnectionRegistry {
         id: c.id,
         label: c.label ?? undefined,
         allowWrites: c.allow_writes,
-        readOnly: this.config.readOnly,
+        // HARDCHARGER_READ_ONLY is a floor: the broker can require read-only, never lift it.
+        readOnly: this.config.readOnly || c.read_only === true,
         tokenSource: new BrokeredTokenSource(this, c.id),
       });
     }

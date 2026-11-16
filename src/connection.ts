@@ -29,6 +29,8 @@ export interface TokenSource {
   token(): Promise<string>;
   /** Tokens this source has handed out or holds, for redaction. */
   secrets(): string[];
+  /** When the last of those tokens expires (ms since the epoch), if known: redact them until then. */
+  secretsExpireAt?(): number;
 }
 
 /** Settings for one Hardcharger server. */
@@ -557,12 +559,18 @@ export class ServerResumingError extends Error {
  * in autocommit).
  */
 export class TransactionLostError extends Error {
-  constructor(name: string, cause: unknown) {
+  /** `replaced`: the connection was replaced (why), rather than its session lost by `cause`. */
+  constructor(name: string, cause: unknown, replaced?: string) {
     super(
-      `The connection "${name}" lost its Hardcharger session (${errorCode(cause) ?? "connection lost"}) after SQL ` +
-        "that can begin a transaction (BEGIN, START TRANSACTION, autocommit) ran on it, so a transaction may have " +
-        "been open: the server rolled it back, and this statement was not run again. Nothing since that BEGIN is " +
-        "committed; start the transaction again. The connection is usable.",
+      replaced !== undefined
+        ? `The connection "${name}" was given a new Hardcharger session (${replaced}) after SQL that can begin a ` +
+            "transaction (BEGIN, START TRANSACTION, autocommit) ran on the previous one without a COMMIT or ROLLBACK " +
+            "after it. If a transaction was still open there, the server rolled it back and nothing since its BEGIN " +
+            "is committed: start it again. This statement was not run. The connection is usable."
+        : `The connection "${name}" lost its Hardcharger session (${errorCode(cause) ?? "connection lost"}) after SQL ` +
+            "that can begin a transaction (BEGIN, START TRANSACTION, autocommit) ran on it, so a transaction may have " +
+            "been open: the server rolled it back, and this statement was not run again. Nothing since that BEGIN is " +
+            "committed; start the transaction again. The connection is usable.",
       { cause },
     );
     this.name = "TransactionLostError";
@@ -574,14 +582,34 @@ export class TransactionLostError extends Error {
  * `PRAGMA`): a new session does not have them, so the statement was not run again there.
  */
 export class SettingsLostError extends Error {
-  constructor(name: string, cause: unknown) {
+  /** `replaced`: the connection was replaced (why), rather than its session lost by `cause`. */
+  constructor(name: string, cause: unknown, replaced?: string) {
     super(
-      `The connection "${name}" lost its Hardcharger session (${errorCode(cause) ?? "connection lost"}) after SQL ` +
-        "that changes the session's settings (SET, RESET or PRAGMA) ran on it. A new session does not have those " +
-        "settings, so this statement was not run again: run the SET again, then the statement. The connection is usable.",
+      replaced !== undefined
+        ? `The connection "${name}" was given a new Hardcharger session (${replaced}) after SQL that changes the ` +
+            "session's settings (SET, RESET or PRAGMA) ran on the previous one. The new session does not have those " +
+            "settings, so this statement was not run: run the SET again, then the statement. The connection is usable."
+        : `The connection "${name}" lost its Hardcharger session (${errorCode(cause) ?? "connection lost"}) after SQL ` +
+            "that changes the session's settings (SET, RESET or PRAGMA) ran on it. A new session does not have those " +
+            "settings, so this statement was not run again: run the SET again, then the statement. The connection is usable.",
       { cause },
     );
     this.name = "SettingsLostError";
+  }
+}
+
+/**
+ * A call reached a connection the registry had already replaced or dropped (a connection broker
+ * changed or withdrew it, e.g. turned a read-only requirement on). It never opens a session
+ * again: the session it would open carries the old settings.
+ */
+export class ConnectionReplacedError extends Error {
+  constructor(name: string, why: string) {
+    super(
+      `The connection "${name}" was closed while this call waited or ran (${why}), so the call did not ` +
+        "finish on it. Run it again: it uses the connection as now listed (see list_connections).",
+    );
+    this.name = "ConnectionReplacedError";
   }
 }
 
@@ -604,6 +632,31 @@ export function changesSettings(sql: string): boolean {
  */
 export function mayOpenTransaction(sql: string): boolean {
   return /\b(?:begin|start\s+transaction|autocommit)\b/iu.test(sql);
+}
+
+/**
+ * Whether `sql` is one statement that ends the open transaction: `COMMIT`, `END`, `ABORT` or `ROLLBACK`
+ * (optionally `WORK` or `TRANSACTION`), comments and a trailing `;` aside. `ROLLBACK TO SAVEPOINT` and
+ * anything with more than one statement are not.
+ */
+export function endsTransaction(sql: string): boolean {
+  const parts = sql
+    .split(";")
+    .map((part) => part.replace(/(?:\s+|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)+/gu, " ").trim())
+    .filter((part) => part !== "");
+  return parts.length === 1 && /^(?:commit|end|abort|rollback)(?:\s+(?:work|transaction))?$/iu.test(parts[0]!);
+}
+
+/** What a closed connection's session may have held, handed to the connection that takes its name. */
+export interface SessionCarryOver {
+  id: string | undefined;
+  uri: string;
+  /** SQL that can begin a transaction ran there and no COMMIT/ROLLBACK followed (or such a loss is still unreported). */
+  transaction: boolean;
+  /** SQL that changes session settings ran there (or such a loss is still unreported). */
+  settings: boolean;
+  /** The catalog and schema the person chose (use_schema, USE); undefined when they kept the default. */
+  searchPath: SearchPath | undefined;
 }
 
 /** Grace added to the server-side timeout before the client-side abort fires. */
@@ -768,10 +821,23 @@ export class HardchargerConnection {
   private readonly openClient: NonNullable<ConnectionHooks["connect"]>;
   /** SQL that can begin a transaction ran on the current client's session (mayOpenTransaction). */
   private mayHoldTransaction = false;
+  /** `autocommit` was mentioned on this session: a COMMIT may not leave it without a transaction. */
+  private autocommitTouched = false;
+  /** The search path was set by the person (use_schema, USE), not the configured default. */
+  private searchPathChosen = false;
   /** SQL that changes session settings ran on the current client's session (changesSettings). */
   private mayHoldSettings = false;
   /** The latest `server_resuming` the client waited out, while a call is under way. */
   private resuming: { at: number; detail: string } | undefined;
+  /** Set when the registry replaced or dropped this connection: it never opens a session again. */
+  private retiredBecause: string | undefined;
+  /**
+   * The connection this one replaced may have held a transaction or SQL-set settings: the next
+   * statement here fails (and is not run) instead of running alone on a fresh session.
+   */
+  private inheritedLoss: { transaction: boolean; why: string } | undefined;
+  /** Closes made since this connection was created: a client opened across one is never used. */
+  private closes = 0;
 
   constructor(
     readonly config: ConnectionConfig,
@@ -831,6 +897,7 @@ export class HardchargerConnection {
     }
     if (catalog !== undefined && schema !== undefined) await c.setOptions({ catalog, schema });
     this.searchPath = { catalog, schema };
+    this.searchPathChosen = true;
     return { ...this.searchPath };
   }
 
@@ -1064,10 +1131,19 @@ export class HardchargerConnection {
 
   /** Returns the shared client, opening it on first use. */
   async get(): Promise<Connection> {
+    if (this.retiredBecause !== undefined) throw new ConnectionReplacedError(this.config.name, this.retiredBecause);
     if (this.client) return this.client;
     if (!this.connecting) {
+      const closes = this.closes;
       this.connecting = this.open()
-        .then((c) => {
+        .then(async (c) => {
+          if (this.retiredBecause !== undefined || this.closes !== closes) {
+            // Retired or closed while connecting (a broker turned read-only on, the person's MCP session
+            // was closed): this session has the old settings, or nobody would ever close it. Never use it.
+            this.connectedAt = null;
+            await c.close().catch(() => undefined);
+            throw new ConnectionReplacedError(this.config.name, this.retiredBecause ?? "the connection was closed");
+          }
           this.client = c;
           return c;
         })
@@ -1084,6 +1160,7 @@ export class HardchargerConnection {
     this.client = null;
     this.connectedAt = null;
     this.mayHoldTransaction = false; // a new client opens a new session
+    this.autocommitTouched = false;
     this.mayHoldSettings = false;
     if (client) {
       this.replacedBefore += client.sessionReplacements;
@@ -1096,7 +1173,51 @@ export class HardchargerConnection {
   }
 
   async close(): Promise<void> {
+    this.closes++;
     await this.reset();
+  }
+
+  /**
+   * Closes this connection for good (the registry replaced or dropped it): a call still holding
+   * it fails with ConnectionReplacedError instead of opening a session with the old settings.
+   */
+  async retire(why: string): Promise<void> {
+    this.retiredBecause = why;
+    await this.close();
+  }
+
+  /**
+   * What this connection's session may hold, for the connection that takes its name after it is
+   * closed (take it before retire(), which forgets it). A loss this connection inherited and has not
+   * reported yet carries on too.
+   */
+  sessionCarryOver(): SessionCarryOver {
+    const inherited = this.inheritedLoss;
+    return {
+      id: this.config.id,
+      uri: this.config.uri,
+      transaction: this.mayHoldTransaction || inherited?.transaction === true,
+      settings: this.mayHoldSettings || (inherited !== undefined && !inherited.transaction),
+      searchPath: this.searchPathChosen ? { ...this.searchPath } : undefined,
+    };
+  }
+
+  /**
+   * This connection takes the name of a closed one (`previous`, from its sessionCarryOver()). When
+   * SQL that can begin a transaction or change session settings ran on `previous`'s session, the
+   * next statement here fails with TransactionLostError or SettingsLostError and is not run
+   * (Chargewire §5.7, as for a lost session): on this new session it would run alone, in
+   * autocommit. On the same server (id and URI), the catalog and schema the person chose carry
+   * over, so a statement never moves silently to the default schema.
+   */
+  inheritSessionState(previous: SessionCarryOver, why: string): void {
+    if (previous.transaction || previous.settings) {
+      this.inheritedLoss = { transaction: previous.transaction, why };
+    }
+    if (previous.searchPath !== undefined && previous.id === this.config.id && previous.uri === this.config.uri) {
+      this.searchPath = { ...previous.searchPath };
+      this.searchPathChosen = true;
+    }
   }
 
   /**
@@ -1107,14 +1228,32 @@ export class HardchargerConnection {
    */
   async run<T>(fn: (client: Connection, ctx: RunContext) => Promise<T>, options: RunOptions = {}): Promise<T> {
     const task = async (): Promise<T> => {
+      const inherited = options.sql !== undefined ? this.inheritedLoss : undefined;
+      if (inherited !== undefined) {
+        this.inheritedLoss = undefined;
+        if (this.retiredBecause === undefined) {
+          this.log(
+            `[hardcharger-mcp] ${this.config.name} replaced (${inherited.why}) with ` +
+              `${inherited.transaction ? "a transaction possibly open" : "session settings set by SQL"}; statement not run`,
+          );
+          throw inherited.transaction
+            ? new TransactionLostError(this.config.name, undefined, inherited.why)
+            : new SettingsLostError(this.config.name, undefined, inherited.why);
+        }
+      }
       let attempt = 0;
       for (;;) {
         attempt++;
         const client = await this.get();
         if (options.sql !== undefined && mayOpenTransaction(options.sql)) this.mayHoldTransaction = true;
+        if (options.sql !== undefined && /\bautocommit\b/iu.test(options.sql)) this.autocommitTouched = true;
         if (options.sql !== undefined && changesSettings(options.sql)) this.mayHoldSettings = true;
         try {
-          return await this.withDeadline((ctx) => fn(client, ctx), options.timeoutSeconds);
+          const result = await this.withDeadline((ctx) => fn(client, ctx), options.timeoutSeconds);
+          // A COMMIT or ROLLBACK the server answered ended the transaction (unless autocommit was
+          // switched, when a new one may follow at once).
+          if (options.sql !== undefined && endsTransaction(options.sql) && !this.autocommitTouched) this.mayHoldTransaction = false;
+          return result;
         } catch (err) {
           if (err instanceof QueryTimeoutError || err instanceof ServerResumingError) throw err;
           // A revoked sign-in (a person's Stop) leaves this connection unusable, like a lost one.

@@ -75,7 +75,8 @@ The servers this person may reach now:
       "uri": "hardcharger://analytics-prod.example.com",
       "default_catalog": "lake",
       "default_schema": "main",
-      "allow_writes": false
+      "allow_writes": false,
+      "read_only": true
     }
   ],
   "message": "Shown when the list is empty, e.g. how to create a server."
@@ -90,14 +91,67 @@ The servers this person may reach now:
 | `uri` | yes | `hardcharger://host[:port][?tls=false]` |
 | `default_catalog`, `default_schema` | no | The session's search path at start |
 | `allow_writes` | no (false) | Whether this person may write through the MCP server here; writes also need `HARDCHARGER_ALLOW_WRITES=true` on the MCP server |
+| `read_only` | no (null) | `true`: require a server-enforced read-only session on this connection (see [Read-only sessions](#read-only-sessions)). Absent or `null`: the MCP server's `HARDCHARGER_READ_ONLY`. `false`: the same as absent; it never lifts `HARDCHARGER_READ_ONLY=true` |
 
 Entries that don't fit are skipped (and logged). The list is reused for
 `HARDCHARGER_MCP_BROKER_CACHE_SECONDS` (default 60) and asked for again at once by
 `list_connections`. A server the broker stops listing is closed for that person.
 
+When the list can't be had, what happens depends on why:
+
+- **A refusal** (any 4xx except 408 and 429, e.g. a 403 for a suspended account): the person
+  reaches nothing from then on; their open sessions are closed, and the broker's text is the
+  answer to every call until a list succeeds.
+- **No answer** (unreachable, a timeout, 408, 429, a 5xx, or a body that isn't a connection list):
+  the last list stays in use only while it is younger than `HARDCHARGER_MCP_BROKER_CACHE_SECONDS`.
+  Once it is that old and can't be renewed, its connections are closed and every call answers
+  with the problem ("The connection broker is unreachable; try again shortly.") until the broker
+  lists again. So no setting a list carried (`read_only`, `allow_writes`, access itself) outlives
+  the cache period.
+
 `allow_writes` decides whether the MCP server offers writes at all. Under the server's access
 control, what a person may change is still decided by their grants: a broker can set
 `allow_writes` true on such a server and let the grants decide.
+
+#### Read-only sessions
+
+`read_only: true` makes the Hardcharger server itself refuse writes on that person's session
+(Chargewire session option `read_only`, capability `read_only_sessions`, Hardcharger 2.13.0 and
+later), not only the MCP server's own SQL check. The MCP server then treats the connection
+exactly as one configured with `HARDCHARGER_READ_ONLY`: it requests `read_only` when it creates
+the session, confirms the server granted it before any setup query or tool query, requests it
+again on every reconnect or replacement session, and offers no writes there whatever
+`allow_writes` says. A server older than 2.13.0 refuses such a session (`read_only: unknown
+session option`, code `unknown_option`), and one that opens it without confirming `read_only`
+fails with "The server did not confirm read_only=true"; either way every call on that connection
+fails and nothing runs there. So set `read_only` only for servers that support it, and leave it
+absent for older ones.
+
+The connection is read-only when **either** the MCP server's `HARDCHARGER_READ_ONLY` is `true`
+**or** the broker says `read_only: true`. `HARDCHARGER_READ_ONLY=true` is the operator's floor:
+a broker's `false` doesn't lift it. A broker that never sends the field (older brokers) gets the
+MCP server's setting, as before.
+
+A session's read-only state can't change. When a later list changes a connection's `read_only`
+(for instance an administrator turned AI writes off, or on again), the MCP server closes that
+person's session on the server and opens a new one with the new setting at the next call:
+
+- A call still under way on the old connection, including one still connecting (a stopped server
+  resuming), fails with "was closed while this call waited or ran" and is not run again; a session
+  that finishes opening after the change is closed at once, never used.
+- On the same server (same `id` and `uri`), the catalog and schema the person chose (`use_schema`,
+  `USE`) carry over to the new session; without such a choice the list's `default_catalog` and
+  `default_schema` apply.
+- When SQL that can begin a transaction (`BEGIN`, ...) without a `COMMIT` or `ROLLBACK` after it, or
+  SQL that changes session settings (`SET`, `RESET`, `PRAGMA`), ran on the old session, the first
+  statement on the new one fails with the same error as after a lost session and is not run: the
+  old transaction was rolled back, and on the new session the statement would run alone, in
+  autocommit. This also holds when the connection was replaced twice before that statement, and
+  when it was missing from one list and listed again.
+
+A change takes effect when the MCP server next asks for the list: within
+`HARDCHARGER_MCP_BROKER_CACHE_SECONDS` (also when the broker can't answer then, see above), or at
+once on `list_connections`. A change to `allow_writes` or `label` alone keeps the session.
 
 ### `POST /connections/<id>/token`
 

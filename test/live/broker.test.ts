@@ -9,6 +9,7 @@
 
 import assert from "node:assert/strict";
 import * as http from "node:http";
+import * as net from "node:net";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +24,7 @@ import { SignJWT, exportSPKI, generateKeyPair } from "jose";
 import { parseConfig } from "../../dist/connection.js";
 import { startHttp } from "../../dist/transports.js";
 import { FakeIssuer } from "../helpers/fake-issuer.ts";
-import { type RunningServer, adminConnection, call, launchServer, ok, textOf } from "./harness.ts";
+import { type RunningServer, adminConnection, call, launchServer, ok, sleep, textOf } from "./harness.ts";
 
 const PUBLIC_URL = "https://mcp.test.invalid/mcp";
 const AUDIENCE = "api://hardcharger-mcp-test";
@@ -37,6 +38,10 @@ interface Grant {
   /** Connection names this person may reach, mapped to whether writes are allowed there. */
   servers: Record<string, boolean>;
   groups?: string[];
+  /** The broker's `read_only` per connection name; a name not here is listed without the field. */
+  readOnly?: Record<string, boolean | null>;
+  /** Connection names dialled through the gated TCP proxy (a server slow to answer). */
+  proxied?: string[];
 }
 
 describe("connection broker: per-person identity", () => {
@@ -61,6 +66,11 @@ describe("connection broker: per-person identity", () => {
   let introspections = 0;
   /** When set, the broker answers every request with this status (an outage). */
   let outage: number | undefined;
+  /** A TCP proxy to the server that holds each new connection until `gate` resolves. */
+  let proxy: net.Server;
+  let proxyPort = 0;
+  let gate: Promise<void> = Promise.resolve();
+  let proxyConnections = 0;
 
   async function startBroker(): Promise<void> {
     brokerServer = http.createServer(async (req, res) => {
@@ -94,10 +104,11 @@ describe("connection broker: per-person identity", () => {
             id: `id-${name}`,
             name,
             label: `Test org / ${name}`,
-            uri: target.uri,
+            uri: grant.proxied?.includes(name) ? `hardcharger://127.0.0.1:${proxyPort}?tls=false` : target.uri,
             default_catalog: "memory",
             default_schema: "main",
             allow_writes: allowWrites,
+            ...(grant.readOnly && name in grant.readOnly ? { read_only: grant.readOnly[name] } : {}),
           })),
           message: "You have no servers yet.",
         });
@@ -162,6 +173,21 @@ describe("connection broker: per-person identity", () => {
     });
     await idp.start();
     await startBroker();
+    proxy = net.createServer((client) => {
+      proxyConnections++;
+      client.pause();
+      client.on("error", () => undefined);
+      void gate.then(() => {
+        const upstream = net.connect({ host: "127.0.0.1", port: target.port });
+        client.pipe(upstream);
+        upstream.pipe(client);
+        client.on("error", () => upstream.destroy());
+        upstream.on("error", () => client.destroy());
+        client.resume();
+      });
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", () => resolve()));
+    proxyPort = (proxy.address() as net.AddressInfo).port;
 
     const admin = await adminConnection(target);
     try {
@@ -169,8 +195,11 @@ describe("connection broker: per-person identity", () => {
         "CREATE TABLE memory.main.orders AS SELECT * FROM (VALUES (1, 'depot-a'), (2, 'depot-b')) t(id, depot)",
         "CREATE ROLE analyst",
         "GRANT SELECT ON main.orders TO analyst",
+        "CREATE SCHEMA memory.staging",
+        "CREATE TABLE memory.staging.orders AS SELECT * FROM (VALUES (1, 'staging-x')) t(id, depot)",
         "CREATE ROLE fixer",
         "GRANT SELECT, UPDATE ON main.orders TO fixer",
+        "GRANT SELECT, UPDATE ON staging.orders TO fixer",
         // Set up before carol has ever signed in.
         'CREATE USER "carol@example.com"',
         'GRANT analyst TO "carol@example.com"',
@@ -204,6 +233,7 @@ describe("connection broker: per-person identity", () => {
     for (const c of clients) await c.close().catch(() => undefined);
     await new Promise<void>((resolve) => mcpServer?.close(() => resolve()));
     await new Promise<void>((resolve) => brokerServer?.close(() => resolve()));
+    await new Promise<void>((resolve) => proxy?.close(() => resolve()));
     await idp.stop();
     await target?.stop();
     rmSync(home, { recursive: true, force: true });
@@ -318,6 +348,136 @@ describe("connection broker: per-person identity", () => {
     const nothing = await call(grace, "run_query", { sql: "SELECT 1" });
     assert.equal(nothing.isError, true);
     assert.match(textOf(nothing), /You have no servers yet\./u);
+  });
+
+  it("lets the broker require a server-enforced read-only session per connection, and replaces the session when that changes", async () => {
+    const admin = await adminConnection(target);
+    try {
+      await admin.execute('CREATE USER "kate@example.com"');
+      await admin.execute('GRANT fixer TO "kate@example.com"');
+    } finally {
+      await admin.close();
+    }
+    // Writes allowed by the broker on both; "guarded" also requires a read-only session, "plain" says nothing.
+    access.set("kate@example.com", { servers: { guarded: true, plain: true }, readOnly: { guarded: true } });
+    const kate = await connectAs("kate@example.com");
+    const listed = await ok<{ connections: Array<{ name: string; read_only_required: boolean; allow_writes: boolean }> }>(kate, "list_connections");
+    assert.deepEqual(
+      listed.connections.map((c) => [c.name, c.read_only_required, c.allow_writes]),
+      [
+        ["guarded", true, false],
+        ["plain", false, true],
+      ],
+    );
+    const blocked = await call(kate, "execute_statement", { sql: "UPDATE orders SET depot = 'x' WHERE id = 1", connection: "guarded" });
+    assert.equal(blocked.isError, true);
+    assert.match(textOf(blocked), /does not accept writes/u);
+    // This SELECT passes the MCP server's SQL check. A read-only session refuses it with the server's
+    // own read_only code (SQLSTATE 25006) before anything else; any other session refuses it only
+    // because kate isn't an administrator.
+    const changeSession = "SELECT hardcharger_set_session_setting(HARDCHARGER_CURRENT_SESSION(), 'query_timeout', '30')";
+    const readOnlyRefusal = /\(read_only, SQLSTATE 25006\b/u;
+    const refusal = async (connection: string): Promise<string> => {
+      const r = await call(kate, "run_query", { sql: changeSession, connection });
+      assert.equal(r.isError, true, textOf(r));
+      return textOf(r);
+    };
+    assert.match(await refusal("guarded"), readOnlyRefusal);
+    const ordinary = await refusal("plain");
+    assert.doesNotMatch(ordinary, readOnlyRefusal);
+    assert.match(ordinary, /permission_denied/u);
+
+    // The administrator turns AI writes on again: the read-only session is replaced with an ordinary one.
+    access.set("kate@example.com", { servers: { guarded: true, plain: true }, readOnly: { guarded: false } });
+    const relisted = await ok<{ connections: Array<{ name: string; read_only_required: boolean; allow_writes: boolean }> }>(kate, "list_connections");
+    assert.deepEqual(relisted.connections.map((c) => [c.name, c.read_only_required, c.allow_writes])[0], ["guarded", false, true]);
+    const nowOrdinary = await refusal("guarded");
+    assert.doesNotMatch(nowOrdinary, readOnlyRefusal);
+    assert.match(nowOrdinary, /permission_denied/u);
+    const fixed = await ok<{ affected_rows: number }>(kate, "execute_statement", {
+      sql: "UPDATE orders SET depot = depot WHERE id = 1",
+      connection: "guarded",
+    });
+    assert.equal(fixed.affected_rows, 1);
+
+    // And off: the writable session is not kept.
+    access.set("kate@example.com", { servers: { guarded: true, plain: true }, readOnly: { guarded: true } });
+    await ok(kate, "list_connections");
+    assert.match(await refusal("guarded"), readOnlyRefusal);
+  });
+
+  it("refuses a write still connecting when the broker turns read-only on, and leaves no session open", { timeout: 60_000 }, async () => {
+    const admin = await adminConnection(target);
+    const rows = async (sql: string) => (await admin.query(sql)).toArray().map((r: { toJSON(): unknown }) => r.toJSON());
+    const lucysSessions = async () =>
+      (await rows("SELECT * FROM hardcharger_sessions()")).filter((s) => JSON.stringify(s, (_k, v: unknown) => (typeof v === "bigint" ? String(v) : v)).includes("lucy@example.com"));
+    try {
+      await admin.execute('CREATE USER "lucy@example.com"');
+      await admin.execute('GRANT fixer TO "lucy@example.com"');
+      access.set("lucy@example.com", { servers: { slow: true }, proxied: ["slow"] });
+      const lucy = await connectAs("lucy@example.com");
+      await ok(lucy, "list_connections");
+      const before = await rows("SELECT depot FROM memory.main.orders WHERE id = 1");
+
+      // The write passes this server's checks (writes allowed), then waits to connect: the server is
+      // slow to answer (a stopped cluster resuming).
+      let open!: () => void;
+      gate = new Promise<void>((resolve) => (open = resolve));
+      const seen = proxyConnections;
+      const pending = call(lucy, "execute_statement", { sql: "UPDATE orders SET depot = 'late-write' WHERE id = 1", connection: "slow" });
+      for (let i = 0; i < 100 && proxyConnections === seen; i++) await sleep(50);
+      assert.ok(proxyConnections > seen, "the connection attempt is held at the proxy");
+
+      // Meanwhile AI writes are turned off: the broker requires read-only, and lucy's next request re-lists.
+      access.set("lucy@example.com", { servers: { slow: false }, readOnly: { slow: true }, proxied: ["slow"] });
+      const relisted = await ok<{ connections: Array<{ name: string; read_only_required: boolean; allow_writes: boolean }> }>(lucy, "list_connections");
+      assert.deepEqual(relisted.connections.map((c) => [c.name, c.read_only_required, c.allow_writes]), [["slow", true, false]]);
+
+      open(); // the server answers
+      const result = await pending;
+      assert.equal(result.isError, true, textOf(result));
+      assert.match(textOf(result), /was closed while this call waited or ran \(replaced: the connection now requires a read-only session\)/u);
+      assert.deepEqual(await rows("SELECT depot FROM memory.main.orders WHERE id = 1"), before, "the write never ran");
+      assert.deepEqual(await lucysSessions(), [], "the session opened late was closed");
+
+      // The next call gets a server-enforced read-only session.
+      const next = await call(lucy, "run_query", {
+        sql: "SELECT hardcharger_set_session_setting(HARDCHARGER_CURRENT_SESSION(), 'query_timeout', '30')",
+        connection: "slow",
+      });
+      assert.match(textOf(next), /\(read_only, SQLSTATE 25006\b/u);
+      assert.equal((await lucysSessions()).length, 1, "the session list does show lucy's sessions: now the read-only one");
+    } finally {
+      gate = Promise.resolve();
+      await admin.close();
+    }
+  });
+
+  it("keeps the schema the person chose when a read_only change gives them a new session", async () => {
+    const admin = await adminConnection(target);
+    try {
+      await admin.execute('CREATE USER "mia@example.com"');
+      await admin.execute('GRANT fixer TO "mia@example.com"');
+      access.set("mia@example.com", { servers: { guarded: true }, readOnly: { guarded: true } });
+      const mia = await connectAs("mia@example.com");
+      await ok(mia, "use_schema", { schema: "staging" });
+      const read = await ok<{ rows: unknown[][] }>(mia, "run_query", { sql: "SELECT current_schema(), depot FROM orders ORDER BY id" });
+      assert.deepEqual(read.rows, [["staging", "staging-x"]]);
+      const main = (await admin.query("SELECT id, depot FROM memory.main.orders ORDER BY id")).toArray().map((r: { toJSON(): unknown }) => r.toJSON());
+
+      // AI writes turned on: a new, ordinary session, still in staging.
+      access.set("mia@example.com", { servers: { guarded: true }, readOnly: { guarded: false } });
+      const listed = await ok<{ connections: Array<{ read_only_required: boolean; default_schema: string }> }>(mia, "list_connections");
+      assert.deepEqual(listed.connections.map((c) => [c.read_only_required, c.default_schema]), [[false, "staging"]]);
+      const fixed = await ok<{ affected_rows: number }>(mia, "execute_statement", { sql: "UPDATE orders SET depot = 'fixed-in-staging' WHERE id = 1" });
+      assert.equal(fixed.affected_rows, 1);
+      const staging = (await admin.query("SELECT id, depot FROM memory.staging.orders ORDER BY id")).toArray().map((r: { toJSON(): unknown }) => r.toJSON());
+      assert.deepEqual(staging, [{ id: 1, depot: "fixed-in-staging" }]);
+      const mainAfter = (await admin.query("SELECT id, depot FROM memory.main.orders ORDER BY id")).toArray().map((r: { toJSON(): unknown }) => r.toJSON());
+      assert.deepEqual(mainAfter, main, "the default schema's table is untouched");
+    } finally {
+      await admin.close();
+    }
   });
 
   it("signs in again with a fresh broker token when the server's access token expires", async () => {

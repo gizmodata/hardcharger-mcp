@@ -1,6 +1,16 @@
 // Registry of named Hardcharger connections with a switchable default.
 
-import { HardchargerConnection, redactSecrets, type ConnectionConfig, type McpConfig } from "./connection.js";
+import {
+  HardchargerConnection,
+  redactSecrets,
+  type ConnectionConfig,
+  type ConnectionHooks,
+  type McpConfig,
+  type SessionCarryOver,
+} from "./connection.js";
+
+/** Names whose closed session may have held something are remembered for this many names at most. */
+const TOMBSTONES_MAX = 100;
 
 export class UnknownConnectionError extends Error {
   constructor(name: string, available: string[]) {
@@ -43,6 +53,8 @@ export interface RegistryOptions {
   connections?: ConnectionConfig[];
   /** Allow starting with no connections (a broker fills them in later). */
   allowEmpty?: boolean;
+  /** Test hook: passed to every connection the registry opens. */
+  connectionHooks?: ConnectionHooks;
 }
 
 /**
@@ -54,6 +66,14 @@ export class ConnectionRegistry {
   private readonly byName = new Map<string, HardchargerConnection>();
   private order: string[] = [];
   private currentName: string | null;
+  private readonly connectionHooks: ConnectionHooks | undefined;
+  /**
+   * Connections a list dropped whose session may have held a transaction, SQL-set settings or a chosen
+   * search path, by lower-case name: when the name is listed again, its new connection inherits that.
+   */
+  private readonly tombstones = new Map<string, SessionCarryOver>();
+  /** Sign-in tokens of retired connections, redacted until they expire. */
+  private retiredSecrets: Array<{ secrets: string[]; until: number }> = [];
 
   constructor(
     readonly config: McpConfig,
@@ -62,49 +82,105 @@ export class ConnectionRegistry {
   ) {
     const initial = options.connections ?? config.connections;
     if (initial.length === 0 && !options.allowEmpty) throw new Error("At least one connection is required.");
+    this.connectionHooks = options.connectionHooks;
     for (const c of initial) this.add(c, initial.length > 1);
     this.currentName = initial[0]?.name ?? null;
   }
 
-  private add(c: ConnectionConfig, tagLogs: boolean): void {
-    const conn = new HardchargerConnection(c, (m) => this.log(tagLogs ? `${m} [${c.name}]` : m));
+  private add(c: ConnectionConfig, tagLogs: boolean): HardchargerConnection {
+    const conn = new HardchargerConnection(c, (m) => this.log(tagLogs ? `${m} [${c.name}]` : m), this.connectionHooks);
     this.byName.set(c.name.toLowerCase(), conn);
     this.order.push(c.name);
+    return conn;
+  }
+
+  /** The clock (ms) for token expiry; a brokered registry's can be a test's. */
+  now(): number {
+    return Date.now();
   }
 
   /**
-   * Replaces the connection set (a broker's new list). A connection whose name, id and URI are
-   * unchanged keeps its open session; one that is gone or changed is closed. The current
-   * connection stays current while it exists, otherwise the first one becomes current.
+   * Replaces the connection set (a broker's new list). A connection whose name, id, URI and
+   * read-only requirement are unchanged keeps its open session; one that is gone or changed is
+   * closed for good (retired: a call still holding it, even one still connecting, fails instead of
+   * using a session with the old settings). A session's read-only state can't change, so a change
+   * in the requirement always means a new session. The connection that takes a closed one's name
+   * (now, or when a dropped name is listed again) inherits what its session may have held: after
+   * SQL that can begin a transaction or change settings its next statement fails and is not run,
+   * as after a lost session, and on the same server the person's chosen catalog and schema carry
+   * over. The current connection stays current while it exists, otherwise the first one becomes
+   * current.
    */
   protected async replaceConnections(next: ConnectionConfig[]): Promise<void> {
-    const closing: HardchargerConnection[] = [];
     const kept = new Map<string, HardchargerConnection>();
+    const replacedBy = new Map<string, string>();
     for (const c of next) {
       const existing = this.byName.get(c.name.toLowerCase());
-      if (existing && existing.config.id === c.id && existing.config.uri === c.uri && Boolean(existing.config.readOnly) === Boolean(c.readOnly)) {
+      if (!existing) continue;
+      if (existing.config.id !== c.id || existing.config.uri !== c.uri) {
+        replacedBy.set(c.name.toLowerCase(), "replaced: the connection now points at another server");
+      } else if (Boolean(existing.config.readOnly) !== Boolean(c.readOnly)) {
+        replacedBy.set(
+          c.name.toLowerCase(),
+          `replaced: the connection ${c.readOnly ? "now requires" : "no longer requires"} a read-only session`,
+        );
+      } else {
         // Same server: keep the session, take the broker's latest description and write setting.
         existing.config.label = c.label;
         existing.config.allowWrites = c.allowWrites;
         kept.set(c.name.toLowerCase(), existing);
       }
     }
-    for (const [key, conn] of this.byName) if (kept.get(key) !== conn) closing.push(conn);
+    const closing: Array<{ conn: HardchargerConnection; why: string }> = [];
+    const carried = new Map<string, { state: SessionCarryOver; why: string }>();
+    for (const [key, conn] of this.byName) {
+      if (kept.get(key) === conn) continue;
+      const replaced = replacedBy.get(key);
+      const why = replaced ?? "the connection is no longer listed";
+      closing.push({ conn, why });
+      // Taken before retire(), which forgets the session.
+      const state = conn.sessionCarryOver();
+      if (replaced !== undefined) carried.set(key, { state, why: replaced });
+      else if (state.transaction || state.settings || state.searchPath !== undefined) this.remember(key, state);
+    }
     this.byName.clear();
     this.order = [];
     for (const c of next) {
-      const reuse = kept.get(c.name.toLowerCase());
+      const key = c.name.toLowerCase();
+      const reuse = kept.get(key);
       if (reuse) {
-        this.byName.set(c.name.toLowerCase(), reuse);
+        this.byName.set(key, reuse);
         this.order.push(reuse.config.name);
-      } else {
-        this.add(c, true);
+        continue;
       }
+      const added = this.add(c, true);
+      const carry = carried.get(key);
+      const tombstone = this.tombstones.get(key);
+      if (carry !== undefined) added.inheritSessionState(carry.state, carry.why);
+      else if (tombstone !== undefined) added.inheritSessionState(tombstone, "a new session: the connection was missing from an earlier list");
+      this.tombstones.delete(key);
     }
     if (this.currentName === null || !this.byName.has(this.currentName.toLowerCase())) {
       this.currentName = this.order[0] ?? null;
     }
-    await Promise.all(closing.map((c) => c.close().catch(() => undefined)));
+    for (const { conn, why } of closing) this.log(`[hardcharger-mcp] closing connection ${conn.config.name}: ${why}`);
+    await Promise.all(closing.map(({ conn, why }) => this.retire(conn, why)));
+  }
+
+  private remember(key: string, state: SessionCarryOver): void {
+    this.tombstones.delete(key);
+    this.tombstones.set(key, state);
+    while (this.tombstones.size > TOMBSTONES_MAX) this.tombstones.delete(this.tombstones.keys().next().value!);
+  }
+
+  /** Closes `conn` for good, keeping its sign-in tokens redacted until they expire. */
+  private async retire(conn: HardchargerConnection, why: string): Promise<void> {
+    const source = conn.config.tokenSource;
+    const until = source?.secretsExpireAt?.();
+    if (source !== undefined && until !== undefined && until > this.now()) {
+      this.retiredSecrets.push({ secrets: source.secrets(), until });
+    }
+    await conn.retire(why).catch(() => undefined);
   }
 
   /** Why there is no connection to use (overridden by a brokered registry). */
@@ -172,7 +248,14 @@ export class ConnectionRegistry {
 
   /** Every secret from every connection plus the HTTP bearer token and the broker credential. */
   secrets(): Array<string | undefined> {
-    return [...this.all().flatMap((c) => c.secrets()), this.config.mcpBearerToken, this.config.broker?.credential];
+    const now = this.now();
+    this.retiredSecrets = this.retiredSecrets.filter((r) => r.until > now);
+    return [
+      ...this.all().flatMap((c) => c.secrets()),
+      ...this.retiredSecrets.flatMap((r) => r.secrets),
+      this.config.mcpBearerToken,
+      this.config.broker?.credential,
+    ];
   }
 
   redact(text: string): string {
@@ -202,7 +285,11 @@ export class ConnectionRegistry {
     });
   }
 
+  /**
+   * Closes every connection for good (the MCP session ended or the server is stopping): a call
+   * still under way, even one still connecting, fails instead of opening a session nobody closes.
+   */
   async close(): Promise<void> {
-    await Promise.all(this.all().map((c) => c.close().catch(() => undefined)));
+    await Promise.all(this.all().map((c) => this.retire(c, "the MCP session was closed")));
   }
 }
