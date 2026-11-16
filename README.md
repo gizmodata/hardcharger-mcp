@@ -346,7 +346,7 @@ Only `HARDCHARGER_*` names are read.
 | `HARDCHARGER_MCP_MAX_SESSIONS` | `200` | HTTP transport with OAuth: cap on concurrent user sessions |
 | `HARDCHARGER_MCP_BROKER_URL` | | HTTP transport with OAuth: a connection broker supplies each person's servers and sign-in tokens ([protocol](docs/connection-broker.md)); no `HARDCHARGER_URI` then |
 | `HARDCHARGER_MCP_BROKER_TOKEN` | | This server's own credential at the broker (required with the URL) |
-| `HARDCHARGER_MCP_BROKER_CACHE_SECONDS` | `60` | How long a person's server list is reused (`list_connections` always asks again) |
+| `HARDCHARGER_MCP_BROKER_CACHE_SECONDS` | `60` | How long a person's server list is reused (`list_connections` always asks again), and the longest it stays in use when the broker can't be asked |
 | `HARDCHARGER_MCP_BROKER_ALLOW_INSECURE` | `false` | Accept a plain `http` broker URL (local testing) |
 | `HARDCHARGER_2_URI`, `HARDCHARGER_3_URI`, … | | Additional connections, see below |
 | `HARDCHARGER_CONNECTIONS` | | Comma-separated names of further connections, see below |

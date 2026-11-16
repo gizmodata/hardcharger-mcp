@@ -10,6 +10,7 @@ import {
   ConnectionReplacedError,
   SettingsLostError,
   TransactionLostError,
+  endsTransaction,
   parseConfig,
 } from "../../dist/connection.js";
 import { INTROSPECTION_CACHE_MS, OAuthError, OAuthVerifier } from "../../dist/oauth.js";
@@ -282,17 +283,55 @@ describe("BrokeredRegistry", () => {
     assert.throws(() => r.get(), (e: unknown) => e instanceof NoConnectionsError && e.message === "maintenance");
   });
 
-  it("keeps the last list when the broker fails", async () => {
-    let fail = false;
-    const { r, lines } = registry(() => (fail ? { status: 500, raw: "" } : { body: { connections: [cluster()] } }), {
-      HARDCHARGER_MCP_BROKER_CACHE_SECONDS: "0",
-    });
+  it("keeps the last list through a broker failure only while it is fresh, then closes its connections", async () => {
+    let answer: "ok" | "500" | "garbled" = "ok";
+    const { r, lines, tick } = registry(
+      () => (answer === "500" ? { status: 500, raw: "" } : answer === "garbled" ? { body: { connections: null } } : { body: { connections: [cluster()] } }),
+      { HARDCHARGER_MCP_BROKER_CACHE_SECONDS: "60" },
+    );
     await r.refresh();
-    fail = true;
-    await r.refresh();
-    assert.deepEqual(r.names(), ["analytics"]);
+    const conn = r.get("analytics");
+    answer = "500";
+    await r.refresh({ force: true }); // list_connections, 10 s later
+    assert.deepEqual(r.names(), ["analytics"], "the list is 0 s old: still current");
+    assert.equal(r.get("analytics"), conn);
     assert.equal(r.status(), "The connection broker answered HTTP 500.");
     assert.ok(lines.some((l) => l.includes("connection broker: The connection broker answered HTTP 500.")), lines.join("\n"));
+
+    answer = "garbled";
+    tick(60_000); // the list is as old as the cache period: it can't be renewed, so it ends
+    await r.refresh();
+    assert.deepEqual(r.names(), []);
+    assert.throws(() => r.get(), (e: unknown) => e instanceof NoConnectionsError && /unexpected body/u.test(e.message));
+    await assert.rejects(conn.query("SELECT 1"), (e: unknown) => e instanceof ConnectionReplacedError);
+
+    answer = "ok"; // the broker answers again
+    await r.refresh();
+    assert.deepEqual(r.names(), ["analytics"]);
+    assert.equal(r.status(), undefined);
+  });
+
+  it("treats a refused list (4xx) as nothing listed, at once, and says why", async () => {
+    let refuse = false;
+    const { r } = registry(
+      () => (refuse ? { status: 403, body: { detail: "Your organization is suspended." } } : { body: { connections: [cluster()] } }),
+      { HARDCHARGER_MCP_BROKER_CACHE_SECONDS: "60" },
+    );
+    await r.refresh();
+    refuse = true;
+    await r.refresh({ force: true });
+    assert.deepEqual(r.names(), []);
+    assert.throws(() => r.get(), (e: unknown) => e instanceof NoConnectionsError && e.message === "Your organization is suspended.");
+    for (const transient of [408, 429]) {
+      const t = registry(() => (refuse ? { status: transient, body: {} } : { body: { connections: [cluster()] } }), {
+        HARDCHARGER_MCP_BROKER_CACHE_SECONDS: "60",
+      });
+      refuse = false;
+      await t.r.refresh();
+      refuse = true;
+      await t.r.refresh({ force: true });
+      assert.deepEqual(t.r.names(), ["analytics"], `${transient} is an outage, not a refusal`);
+    }
   });
 
   it("mints a token per server with the newest caller token, reuses it for most of its life, then mints again", async () => {
@@ -364,25 +403,54 @@ describe("BrokeredRegistry", () => {
   });
 });
 
+interface ScriptedSession {
+  no: number;
+  /** The server made this session read-only (it was asked to, and is new enough). */
+  readOnly: boolean;
+  /** Options set after creation (catalog, schema). */
+  options: Record<string, unknown>;
+  statements: string[];
+  closed: boolean;
+}
+
 /**
- * A scripted Hardcharger client for brokered connections: records each connect's options and every
- * statement, confirms `read_only` only when the server is new enough (`readOnlySessions`), and can
- * hold a statement until its client is closed (it then fails as a closed connection does).
+ * A scripted Hardcharger client for brokered connections: one session per connect, recording its
+ * options and statements; `read_only` is confirmed only when the server is new enough
+ * (`readOnlySessions`). A "HOLD" statement waits until its client is closed (then fails as a closed
+ * connection does); `gate` holds the next connect, or the first request of a lazily connected client
+ * (the sign-in that wakes a stopped cluster), until `release()`.
  */
 function scriptedServer(script: { readOnlySessions?: boolean } = {}) {
-  const connects: Array<{ url: string; sessionOptions: unknown }> = [];
-  const statements: string[] = [];
-  const closed: number[] = [];
+  const sessions: ScriptedSession[] = [];
   let held: { started: () => void } | undefined;
-  let clientNo = 0;
+  let gate: { at: "connect" | "first-request"; reached: () => void; released: Promise<void> } | undefined;
+  let release = () => {};
+  const passGate = async (at: "connect" | "first-request") => {
+    if (gate?.at !== at) return;
+    const g = gate;
+    gate = undefined;
+    g.reached();
+    await g.released;
+  };
   const connect = async (options: { url: string; sessionOptions?: Record<string, unknown> }) => {
-    const no = ++clientNo;
-    connects.push({ url: options.url, sessionOptions: options.sessionOptions });
-    const readOnly = options.sessionOptions?.read_only === true && script.readOnlySessions !== false;
+    const session: ScriptedSession = {
+      no: sessions.length + 1,
+      readOnly: options.sessionOptions?.read_only === true && script.readOnlySessions !== false,
+      options: { ...options.sessionOptions },
+      statements: [],
+      closed: false,
+    };
+    sessions.push(session);
     let onClose: (() => void) | undefined;
+    await passGate("connect");
+    let first = true;
     const run = async (sql: string) => {
+      if (first) {
+        first = false;
+        await passGate("first-request");
+      }
       if (/hardcharger_settings\(\)/u.test(sql)) return tableFromArrays({ name: [] as string[], value: [] as string[] });
-      statements.push(sql);
+      session.statements.push(sql);
       if (sql === "HOLD") {
         const h = held;
         held = undefined;
@@ -395,14 +463,16 @@ function scriptedServer(script: { readOnlySessions?: boolean } = {}) {
     };
     return {
       sessionReplacements: 0,
-      sessionId: `s${no}`,
+      sessionId: `s${session.no}`,
       server: { protocol: "chargewire", protocol_versions: ["1"], capabilities: [] },
       async setOptions(o: Record<string, unknown>) {
-        return o;
+        Object.assign(session.options, o);
+        return { ...session.options };
       },
       async getSession() {
         // A server before Hardcharger 2.13.0 ignores the option it doesn't know.
-        return { session_id: `s${no}`, options: readOnly ? { read_only: true } : {}, idle_timeout_s: 600 };
+        const { read_only: _ignored, ...rest } = session.options;
+        return { session_id: `s${session.no}`, options: session.readOnly ? { ...rest, read_only: true } : rest, idle_timeout_s: 600 };
       },
       query: (sql: string) => run(sql),
       async execute(sql: string) {
@@ -410,14 +480,37 @@ function scriptedServer(script: { readOnlySessions?: boolean } = {}) {
         return 0;
       },
       async close() {
-        closed.push(no);
+        session.closed = true;
         onClose?.();
       },
     };
   };
-  /** The next "HOLD" statement waits until its client closes; resolves once it is running. */
-  const holdNext = () => new Promise<void>((started) => (held = { started }));
-  return { connect, connects, statements, closed, holdNext };
+  return {
+    connect,
+    sessions,
+    /** What each connect asked for at session creation. */
+    get connects() {
+      return sessions.map((s) => ({ sessionOptions: s.options.read_only === true ? { read_only: true } : undefined }));
+    },
+    /** Every statement, over all sessions, in order of session. */
+    get statements() {
+      return sessions.flatMap((s) => s.statements);
+    },
+    /** The numbers of the sessions closed. */
+    get closed() {
+      return sessions.filter((s) => s.closed).map((s) => s.no);
+    },
+    /** The next "HOLD" statement waits until its client closes; resolves once it is running. */
+    holdNext: () => new Promise<void>((started) => (held = { started })),
+    /** Holds the next connect (or its first request) until release(); resolves once it is held. */
+    gateNext: (at: "connect" | "first-request") =>
+      new Promise<void>((reached) => {
+        let open!: () => void;
+        gate = { at, reached, released: new Promise<void>((r) => (open = r)) };
+        release = open;
+      }),
+    release: () => release(),
+  };
 }
 
 function brokeredWith(
@@ -576,8 +669,9 @@ describe("BrokeredRegistry: read_only per connection", () => {
     await r.refresh();
     await assert.rejects(r.get().query("COMMIT"), (e: unknown) => {
       assert.ok(e instanceof TransactionLostError, String(e));
-      assert.match((e as Error).message, /\(replaced: the connection now requires a read-only session\)/u);
-      assert.match((e as Error).message, /this statement was not run again/u);
+      assert.match((e as Error).message, /new Hardcharger session \(replaced: the connection now requires a read-only session\)/u);
+      assert.match((e as Error).message, /If a transaction was still open there, the server rolled it back/u);
+      assert.match((e as Error).message, /This statement was not run\./u);
       return true;
     });
     assert.deepEqual(server.statements, ["BEGIN", "INSERT INTO t VALUES (1)"], "COMMIT never ran on the new session");
@@ -621,6 +715,189 @@ describe("BrokeredRegistry: read_only per connection", () => {
     await r.refresh();
     await assert.rejects(call, (e: unknown) => e instanceof ConnectionReplacedError);
     assert.equal(server.connects.length, 1, "the lost statement was not retried on a new read-write session");
+  });
+});
+
+describe("BrokeredRegistry: what a replaced connection leaves behind", () => {
+  const WRITES = { HARDCHARGER_ALLOW_WRITES: "true" };
+
+  for (const at of ["connect", "first-request"] as const) {
+    it(`a call still connecting when read_only is turned on never runs on the read-write session (held at ${at})`, { timeout: 5000 }, async () => {
+      const server = scriptedServer();
+      let readOnly = false;
+      const { r } = brokeredWith(server, () => [cluster({ read_only: readOnly, allow_writes: true })], WRITES);
+      await r.refresh();
+      const old = r.get();
+      const held = server.gateNext(at); // a stopped cluster resuming, or a slow first sign-in
+      const call = old.update("DELETE FROM orders");
+      call.catch(() => undefined);
+      await held;
+      readOnly = true;
+      await r.refresh();
+      server.release();
+      await assert.rejects(call, (e: unknown) => {
+        assert.ok(e instanceof ConnectionReplacedError, String(e));
+        assert.match((e as Error).message, /now requires a read-only session/u);
+        return true;
+      });
+      assert.deepEqual(server.statements, [], "nothing ran on the read-write session");
+      assert.deepEqual(
+        server.sessions.map((s) => [s.readOnly, s.closed]),
+        [[false, true]],
+        "the read-write session opened late is closed, not left open on the server",
+      );
+      await r.get().query("SELECT 1");
+      assert.deepEqual(server.sessions[1]?.readOnly, true);
+    });
+  }
+
+  it("a call still connecting when the person's MCP session is closed (idle, pool full) leaves no session open", { timeout: 5000 }, async () => {
+    const server = scriptedServer();
+    const { r } = brokeredWith(server, () => [cluster({ allow_writes: true })], WRITES);
+    await r.refresh();
+    const held = server.gateNext("connect");
+    const call = r.get().update("DELETE FROM orders");
+    call.catch(() => undefined);
+    await held;
+    await r.close();
+    server.release();
+    await assert.rejects(call, (e: unknown) => e instanceof ConnectionReplacedError && /the MCP session was closed/u.test((e as Error).message));
+    assert.deepEqual(server.statements, []);
+    assert.deepEqual(server.closed, [1]);
+  });
+
+  it("keeps the catalog and schema the person chose across a read_only change on the same server", async () => {
+    const server = scriptedServer();
+    let readOnly = true;
+    const { r } = brokeredWith(
+      server,
+      () => [cluster({ read_only: readOnly, allow_writes: true, default_catalog: "lake", default_schema: "main" })],
+      WRITES,
+    );
+    await r.refresh();
+    await r.get().useSchema({ catalog: "lake", schema: "staging" });
+    readOnly = false; // AI writes turned on: a new session
+    await r.refresh();
+    assert.deepEqual(r.get().currentSearchPath(), { catalog: "lake", schema: "staging" });
+    await r.get().update("DELETE FROM orders");
+    assert.deepEqual(server.sessions[1]?.options, { catalog: "lake", schema: "staging" });
+    assert.deepEqual(server.sessions[1]?.statements, ["DELETE FROM orders"]);
+    assert.deepEqual(r.summaries()[0]?.default_schema, "staging");
+  });
+
+  it("takes the broker's new default when the person never chose a schema, and never carries one to another server", async () => {
+    const server = scriptedServer();
+    let entry = cluster({ default_catalog: "lake", default_schema: "main" });
+    const { r } = brokeredWith(server, () => [entry]);
+    await r.refresh();
+    await r.get().query("SELECT 1");
+    entry = cluster({ read_only: true, default_catalog: "lake", default_schema: "reporting" });
+    await r.refresh();
+    assert.deepEqual(r.get().currentSearchPath(), { catalog: "lake", schema: "reporting" });
+
+    await r.get().useSchema({ catalog: "lake", schema: "staging" });
+    entry = cluster({ read_only: true, uri: "hardcharger://elsewhere.test.invalid", default_catalog: "lake", default_schema: "main" });
+    await r.refresh();
+    assert.deepEqual(r.get().currentSearchPath(), { catalog: "lake", schema: "main" });
+  });
+
+  it("reports a possibly open transaction after two replacements with no statement in between", async () => {
+    const server = scriptedServer();
+    let readOnly = false;
+    const { r } = brokeredWith(server, () => [cluster({ read_only: readOnly, allow_writes: true })], WRITES);
+    await r.refresh();
+    await r.get().update("BEGIN");
+    await r.get().update("INSERT INTO t VALUES (1)");
+    readOnly = true;
+    await r.refresh(); // list_connections: no statement
+    readOnly = false;
+    await r.refresh();
+    await assert.rejects(r.get().update("INSERT INTO t VALUES (2)"), (e: unknown) => e instanceof TransactionLostError);
+    assert.deepEqual(server.statements, ["BEGIN", "INSERT INTO t VALUES (1)"]);
+  });
+
+  it("reports a possibly open transaction, and keeps the chosen schema, when a connection comes back after one list without it", async () => {
+    const server = scriptedServer();
+    let listed = true;
+    const { r } = brokeredWith(server, () => (listed ? [cluster({ allow_writes: true })] : [cluster({ id: "c-2", name: "ops" })]), WRITES);
+    await r.refresh();
+    await r.get("analytics").useSchema({ catalog: "lake", schema: "staging" });
+    await r.get("analytics").update("BEGIN");
+    await r.get("analytics").update("INSERT INTO t VALUES (1)");
+    listed = false;
+    await r.refresh();
+    listed = true;
+    await r.refresh();
+    await assert.rejects(r.get("analytics").update("INSERT INTO t VALUES (2)"), (e: unknown) => {
+      assert.ok(e instanceof TransactionLostError, String(e));
+      assert.match((e as Error).message, /missing from an earlier list/u);
+      return true;
+    });
+    assert.deepEqual(r.get("analytics").currentSearchPath(), { catalog: "lake", schema: "staging" });
+    await r.get("analytics").update("INSERT INTO t VALUES (2)");
+    assert.deepEqual(server.statements, ["BEGIN", "INSERT INTO t VALUES (1)", "INSERT INTO t VALUES (2)"]);
+  });
+
+  it("does not report a transaction that a COMMIT or ROLLBACK ended", async () => {
+    for (const end of ["COMMIT", "rollback;", "END TRANSACTION", "/* done */ COMMIT WORK"]) {
+      const server = scriptedServer();
+      let readOnly = false;
+      const { r } = brokeredWith(server, () => [cluster({ read_only: readOnly, allow_writes: true })], WRITES);
+      await r.refresh();
+      await r.get().update("BEGIN");
+      await r.get().update("INSERT INTO t VALUES (1)");
+      await r.get().update(end);
+      readOnly = true;
+      await r.refresh();
+      await r.get().query("SELECT count(*) FROM t");
+      assert.deepEqual(server.statements.at(-1), "SELECT count(*) FROM t", end);
+    }
+  });
+
+  it("still reports a transaction after ROLLBACK TO SAVEPOINT, COMMIT with more SQL, or with autocommit switched", async () => {
+    for (const steps of [
+      ["BEGIN", "ROLLBACK TO SAVEPOINT s1"],
+      ["BEGIN", "COMMIT; BEGIN"],
+      ["SET autocommit = false", "COMMIT"],
+    ]) {
+      const server = scriptedServer();
+      let readOnly = false;
+      const { r } = brokeredWith(server, () => [cluster({ read_only: readOnly, allow_writes: true })], WRITES);
+      await r.refresh();
+      for (const sql of steps) await r.get().update(sql);
+      readOnly = true;
+      await r.refresh();
+      await assert.rejects(r.get().query("SELECT 1"), (e: unknown) => e instanceof TransactionLostError, steps.join(" / "));
+    }
+  });
+
+  it("keeps a retired connection's sign-in tokens redacted until they expire", async () => {
+    let listed = true;
+    let now = 1_000_000;
+    const config = parseConfig({ ...OAUTH, ...BROKER, HARDCHARGER_MCP_BROKER_CACHE_SECONDS: "0" });
+    const { fetchImpl } = fakeBroker((s) =>
+      s.url.endsWith("/token") ? { body: { token: "minted-secret", expires_in: 100 } } : { body: { connections: listed ? [cluster()] : [] } },
+    );
+    const r = new BrokeredRegistry(config, new BrokerClient(config.broker!, { fetch: fetchImpl }), () => undefined, { now: () => now });
+    r.setSubjectToken("caller-access-token");
+    await r.refresh();
+    await r.get().config.tokenSource!.token();
+    listed = false;
+    await r.refresh();
+    assert.equal(r.redact("x minted-secret y"), "x *** y");
+    now += 101_000;
+    assert.equal(r.redact("x minted-secret y"), "x minted-secret y", "expired: no longer kept");
+  });
+});
+
+describe("endsTransaction", () => {
+  it("is one COMMIT, END, ABORT or ROLLBACK statement, and nothing else", () => {
+    for (const sql of ["COMMIT", "commit;", " END ", "ABORT", "ROLLBACK WORK", "rollback transaction ;", "-- x\nCOMMIT"]) {
+      assert.equal(endsTransaction(sql), true, sql);
+    }
+    for (const sql of ["ROLLBACK TO SAVEPOINT a", "COMMIT; BEGIN", "BEGIN; COMMIT", "SELECT 'COMMIT'", "COMMITTED", "UPDATE t SET end = 1"]) {
+      assert.equal(endsTransaction(sql), false, sql);
+    }
   });
 });
 

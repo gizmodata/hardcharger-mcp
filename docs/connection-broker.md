@@ -97,6 +97,18 @@ Entries that don't fit are skipped (and logged). The list is reused for
 `HARDCHARGER_MCP_BROKER_CACHE_SECONDS` (default 60) and asked for again at once by
 `list_connections`. A server the broker stops listing is closed for that person.
 
+When the list can't be had, what happens depends on why:
+
+- **A refusal** (any 4xx except 408 and 429, e.g. a 403 for a suspended account): the person
+  reaches nothing from then on; their open sessions are closed, and the broker's text is the
+  answer to every call until a list succeeds.
+- **No answer** (unreachable, a timeout, 408, 429, a 5xx, or a body that isn't a connection list):
+  the last list stays in use only while it is younger than `HARDCHARGER_MCP_BROKER_CACHE_SECONDS`.
+  Once it is that old and can't be renewed, its connections are closed and every call answers
+  with the problem ("The connection broker is unreachable; try again shortly.") until the broker
+  lists again. So no setting a list carried (`read_only`, `allow_writes`, access itself) outlives
+  the cache period.
+
 `allow_writes` decides whether the MCP server offers writes at all. Under the server's access
 control, what a person may change is still decided by their grants: a broker can set
 `allow_writes` true on such a server and let the grants decide.
@@ -122,14 +134,24 @@ MCP server's setting, as before.
 
 A session's read-only state can't change. When a later list changes a connection's `read_only`
 (for instance an administrator turned AI writes off, or on again), the MCP server closes that
-person's session on the server and opens a new one with the new setting at the next call; a
-statement still in flight on the old session fails and isn't retried there. When SQL that can
-begin a transaction (`BEGIN`, ...) or change session settings (`SET`, `RESET`, `PRAGMA`) ran on the
-old session, the first statement on the new one fails with the same error as after a lost session
-and is not run: the old transaction was rolled back, and on the new session the statement would
-run alone, in autocommit. A change takes effect when the MCP server next asks for the list: within
-`HARDCHARGER_MCP_BROKER_CACHE_SECONDS`, or at once on `list_connections`. A change to
-`allow_writes` or `label` alone keeps the session.
+person's session on the server and opens a new one with the new setting at the next call:
+
+- A call still under way on the old connection, including one still connecting (a stopped server
+  resuming), fails with "was closed while this call waited or ran" and is not run again; a session
+  that finishes opening after the change is closed at once, never used.
+- On the same server (same `id` and `uri`), the catalog and schema the person chose (`use_schema`,
+  `USE`) carry over to the new session; without such a choice the list's `default_catalog` and
+  `default_schema` apply.
+- When SQL that can begin a transaction (`BEGIN`, ...) without a `COMMIT` or `ROLLBACK` after it, or
+  SQL that changes session settings (`SET`, `RESET`, `PRAGMA`), ran on the old session, the first
+  statement on the new one fails with the same error as after a lost session and is not run: the
+  old transaction was rolled back, and on the new session the statement would run alone, in
+  autocommit. This also holds when the connection was replaced twice before that statement, and
+  when it was missing from one list and listed again.
+
+A change takes effect when the MCP server next asks for the list: within
+`HARDCHARGER_MCP_BROKER_CACHE_SECONDS` (also when the broker can't answer then, see above), or at
+once on `list_connections`. A change to `allow_writes` or `label` alone keeps the session.
 
 ### `POST /connections/<id>/token`
 

@@ -15,11 +15,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   setup or queries, requested again on every reconnect, no write tools); absent or `null` keeps
   `HARDCHARGER_READ_ONLY`, so older brokers work unchanged. `HARDCHARGER_READ_ONLY=true` stays a
   floor: the broker's `false` doesn't lift it. When a later list changes a connection's
-  `read_only`, its session is closed and replaced at the next call; a call still in flight on the
-  old session fails instead of reopening it with the old setting, and when a transaction may have
-  been open (or SQL set session settings) the first statement on the new session fails, unrun, with
-  `TransactionLostError` (`SettingsLostError`), as after a lost session. A call still in flight on
-  a connection the broker stopped listing now fails the same way instead of signing in again.
+  `read_only`, its session is closed and replaced at the next call:
+  - a call still under way on the old connection, including one still connecting to a resuming
+    server, fails instead of running there; a session that finishes opening after the change is
+    closed at once;
+  - the catalog and schema the person chose (`use_schema`, `USE`) carry over to the new session
+    on the same server;
+  - when a transaction may have been open (SQL that can begin one without a `COMMIT` or
+    `ROLLBACK` after it) or SQL set session settings, the first statement on the new session fails,
+    unrun, with `TransactionLostError` (`SettingsLostError`), as after a lost session, also after
+    two replacements in a row.
+
+### Changed
+
+- With a connection broker, a list the broker refuses (a 4xx other than 408 and 429) leaves the
+  person with no connections, and their open sessions are closed. When the broker can't answer
+  (unreachable, 5xx, an unexpected body), the last list stays in use only until it is
+  `HARDCHARGER_MCP_BROKER_CACHE_SECONDS` old; then its connections are closed and calls answer
+  with the problem until the broker lists again. Before, the last list stayed in use indefinitely.
+- A call under way on a connection the broker stopped listing, or in a person's MCP session that
+  was closed (idle, pool full), fails instead of signing in again; a connection missing from one
+  list and listed again keeps the person's schema and reports a possibly open transaction.
+- Sign-in tokens minted for a closed brokered connection stay redacted from messages until they
+  expire.
+
+### Fixed
+
+- A transaction ended by a `COMMIT` or `ROLLBACK` the server answered no longer counts as possibly
+  open, so a later lost or replaced session doesn't report committed work as rolled back.
 
 ## [2.5.0] - 2026-11-14
 
